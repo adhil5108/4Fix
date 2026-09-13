@@ -15,9 +15,6 @@ export const env = {
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET,
   jwtAccessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN,
   passwordSaltRounds: readPositiveInteger('PASSWORD_SALT_ROUNDS'),
-  otpExpiryMinutes: readPositiveInteger('OTP_EXPIRY_MINUTES'),
-  otpResendCooldownSeconds: readPositiveInteger('OTP_RESEND_COOLDOWN_SECONDS'),
-  otpMaxAttempts: readPositiveInteger('OTP_MAX_ATTEMPTS'),
 };
 
 export function validateEnv() {
@@ -27,9 +24,6 @@ export function validateEnv() {
     'JWT_ACCESS_SECRET',
     'JWT_ACCESS_EXPIRES_IN',
     'PASSWORD_SALT_ROUNDS',
-    'OTP_EXPIRY_MINUTES',
-    'OTP_RESEND_COOLDOWN_SECONDS',
-    'OTP_MAX_ATTEMPTS',
   ].filter((name) => !process.env[name]);
 
   if (missingVariables.length > 0) {
@@ -44,9 +38,6 @@ export function validateEnv() {
 
   const positiveIntegerSettings = {
     PASSWORD_SALT_ROUNDS: env.passwordSaltRounds,
-    OTP_EXPIRY_MINUTES: env.otpExpiryMinutes,
-    OTP_RESEND_COOLDOWN_SECONDS: env.otpResendCooldownSeconds,
-    OTP_MAX_ATTEMPTS: env.otpMaxAttempts,
   };
 
   for (const [name, value] of Object.entries(positiveIntegerSettings)) {
