@@ -10,3 +10,14 @@ export function toSafeUser(user) {
     updatedAt: user.updatedAt,
   };
 }
+
+export function toUserSummary(user) {
+  if (!user) {
+    return null;
+  }
+
+  return {
+    id: user.id,
+    name: user.name,
+  };
+}

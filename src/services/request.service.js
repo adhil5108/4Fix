@@ -1,0 +1,348 @@
+import Quote from '../models/Quote.js';
+import ServiceRequest, { REQUEST_STATUSES } from '../models/ServiceRequest.js';
+import { ApiError } from '../utils/ApiError.js';
+import {
+  assertNotPastDate,
+  normalizeTimeOfDay,
+  parseDateOnly,
+} from '../utils/dateTime.js';
+import { isSameId, parseObjectId } from '../utils/objectId.js';
+import {
+  assertTransition,
+  QUOTABLE_REQUEST_STATUSES,
+} from '../utils/requestStateMachine.js';
+import {
+  toCustomerRequest,
+  toProviderRequest,
+  toProviderRequestSummary,
+} from './requestPresenter.service.js';
+import { getActiveServiceOrFail } from './service.service.js';
+
+const CUSTOMER_POPULATE = [
+  { path: 'serviceId' },
+  { path: 'selectedProviderId' },
+];
+
+const CUSTOMER_DETAIL_POPULATE = [
+  ...CUSTOMER_POPULATE,
+  { path: 'acceptedQuoteId', populate: { path: 'providerId' } },
+];
+
+const PROVIDER_DETAIL_POPULATE = [{ path: 'serviceId' }, { path: 'customerId' }];
+
+function requiredText(value, fieldName, minLength, maxLength) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+
+  if (trimmed.length < minLength) {
+    throw new ApiError(
+      400,
+      `${fieldName} must be at least ${minLength} characters`,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  if (trimmed.length > maxLength) {
+    throw new ApiError(
+      400,
+      `${fieldName} must be ${maxLength} characters or fewer`,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  return trimmed;
+}
+
+function validateAttachments(attachments) {
+  if (attachments === undefined || attachments === null) {
+    return [];
+  }
+
+  if (!Array.isArray(attachments)) {
+    throw new ApiError(400, 'Attachments must be an array', 'VALIDATION_ERROR');
+  }
+
+  if (attachments.length > 10) {
+    throw new ApiError(400, 'A request supports at most 10 attachments', 'VALIDATION_ERROR');
+  }
+
+  return attachments.map((attachment) =>
+    requiredText(attachment, 'Each attachment', 1, 500),
+  );
+}
+
+function validateAddress(address) {
+  if (!address || typeof address !== 'object' || Array.isArray(address)) {
+    throw new ApiError(400, 'Address is required', 'VALIDATION_ERROR');
+  }
+
+  const pincode = typeof address.pincode === 'string' ? address.pincode.trim() : '';
+
+  if (!/^\d{6}$/.test(pincode)) {
+    throw new ApiError(400, 'Pincode must be 6 digits', 'VALIDATION_ERROR');
+  }
+
+  return {
+    label:
+      address.label === undefined || address.label === null || address.label === ''
+        ? 'Home'
+        : requiredText(address.label, 'Address label', 1, 40),
+    addressLine: requiredText(address.addressLine, 'Address line', 5, 240),
+    city: requiredText(address.city, 'City', 2, 80),
+    state: requiredText(address.state, 'State', 2, 80),
+    pincode,
+  };
+}
+
+function parseStatusFilter(value, allowedStatuses) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const status = String(value).trim().toUpperCase();
+
+  if (!allowedStatuses.includes(status)) {
+    throw new ApiError(
+      400,
+      `Status must be one of: ${allowedStatuses.join(', ')}`,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  return status;
+}
+
+async function findRequestOrFail(requestId) {
+  const id = parseObjectId(requestId, 'requestId');
+  const request = await ServiceRequest.findById(id);
+
+  if (!request) {
+    throw new ApiError(404, 'Service request not found', 'REQUEST_NOT_FOUND');
+  }
+
+  return request;
+}
+
+export async function findCustomerRequestOrFail(requestId, customer) {
+  const request = await findRequestOrFail(requestId);
+
+  if (!isSameId(request.customerId, customer.id)) {
+    throw new ApiError(403, 'Access denied', 'FORBIDDEN');
+  }
+
+  return request;
+}
+
+async function loadCustomerRequest(requestId) {
+  return ServiceRequest.findById(requestId).populate(CUSTOMER_DETAIL_POPULATE);
+}
+
+export async function createRequest(customer, input) {
+  const service = await getActiveServiceOrFail(input?.serviceId);
+  const description = requiredText(input?.description, 'Description', 5, 2000);
+  const attachments = validateAttachments(input?.attachments);
+  const address = validateAddress(input?.address);
+  const preferredDate = parseDateOnly(input?.preferredDate, 'Preferred date');
+  const preferredTime = normalizeTimeOfDay(input?.preferredTime, 'Preferred time');
+
+  assertNotPastDate(preferredDate, 'Preferred date');
+
+  const created = await ServiceRequest.create({
+    customerId: customer.id,
+    serviceId: service.id,
+    description,
+    attachments,
+    address,
+    preferredDate,
+    preferredTime,
+    status: REQUEST_STATUSES.PENDING,
+    selectedProviderId: null,
+    acceptedQuoteId: null,
+    scheduledDate: null,
+    scheduledTime: null,
+  });
+
+  await created.populate(CUSTOMER_POPULATE);
+
+  return {
+    request: toCustomerRequest(created),
+  };
+}
+
+export async function listCustomerRequests(customer, query) {
+  const status = parseStatusFilter(query?.status, Object.values(REQUEST_STATUSES));
+  const filter = { customerId: customer.id };
+
+  if (status) {
+    filter.status = status;
+  }
+
+  const requests = await ServiceRequest.find(filter)
+    .sort({ createdAt: -1 })
+    .populate(CUSTOMER_POPULATE);
+
+  return {
+    requests: requests.map((request) => toCustomerRequest(request)),
+  };
+}
+
+export async function getCustomerRequest(customer, requestId) {
+  const request = await findCustomerRequestOrFail(requestId, customer);
+  const [detailedRequest, quotesCount] = await Promise.all([
+    loadCustomerRequest(request.id),
+    Quote.countDocuments({ requestId: request.id }),
+  ]);
+
+  return {
+    request: toCustomerRequest(detailedRequest, { quotesCount }),
+  };
+}
+
+export async function cancelRequest(customer, requestId) {
+  const request = await findCustomerRequestOrFail(requestId, customer);
+
+  assertTransition(request.status, REQUEST_STATUSES.CANCELLED);
+
+  const cancelled = await ServiceRequest.findOneAndUpdate(
+    { _id: request.id, customerId: customer.id, status: request.status },
+    { $set: { status: REQUEST_STATUSES.CANCELLED } },
+    { returnDocument: 'after' },
+  ).populate(CUSTOMER_POPULATE);
+
+  if (!cancelled) {
+    throw new ApiError(409, 'Service request was updated, please retry', 'REQUEST_CONFLICT');
+  }
+
+  return {
+    request: toCustomerRequest(cancelled),
+  };
+}
+
+async function applyProviderTransition(provider, requestId, targetStatus, extraFields = {}) {
+  const request = await findRequestOrFail(requestId);
+
+  if (!isSameId(request.selectedProviderId, provider.id)) {
+    throw new ApiError(403, 'Access denied', 'FORBIDDEN');
+  }
+
+  assertTransition(request.status, targetStatus);
+
+  const updated = await ServiceRequest.findOneAndUpdate(
+    { _id: request.id, selectedProviderId: provider.id, status: request.status },
+    { $set: { status: targetStatus, ...extraFields } },
+    { returnDocument: 'after' },
+  ).populate(PROVIDER_DETAIL_POPULATE);
+
+  if (!updated) {
+    throw new ApiError(409, 'Service request was updated, please retry', 'REQUEST_CONFLICT');
+  }
+
+  const ownQuote = await Quote.findOne({ requestId: updated.id, providerId: provider.id });
+
+  return {
+    request: toProviderRequest(updated, { ownQuote }),
+  };
+}
+
+export async function scheduleRequest(provider, requestId, input) {
+  const scheduledDate = parseDateOnly(input?.scheduledDate, 'Scheduled date');
+  const scheduledTime = normalizeTimeOfDay(input?.scheduledTime, 'Scheduled time');
+
+  assertNotPastDate(scheduledDate, 'Scheduled date');
+
+  return applyProviderTransition(provider, requestId, REQUEST_STATUSES.SCHEDULED, {
+    scheduledDate,
+    scheduledTime,
+  });
+}
+
+export function startRequest(provider, requestId) {
+  return applyProviderTransition(provider, requestId, REQUEST_STATUSES.IN_PROGRESS);
+}
+
+export function completeRequest(provider, requestId) {
+  return applyProviderTransition(provider, requestId, REQUEST_STATUSES.COMPLETED);
+}
+
+export async function listAvailableRequests(_provider, query) {
+  const status = parseStatusFilter(query?.status, QUOTABLE_REQUEST_STATUSES);
+  const requests = await ServiceRequest.find({
+    status: status || REQUEST_STATUSES.PENDING,
+  })
+    .sort({ createdAt: -1 })
+    .populate({ path: 'serviceId' });
+
+  return {
+    requests: requests.map(toProviderRequestSummary),
+  };
+}
+
+export async function assertProviderCanAccessRequest(request, provider) {
+  if (
+    QUOTABLE_REQUEST_STATUSES.includes(request.status) ||
+    isSameId(request.selectedProviderId, provider.id)
+  ) {
+    return;
+  }
+
+  const ownQuote = await Quote.exists({ requestId: request.id, providerId: provider.id });
+
+  if (!ownQuote) {
+    throw new ApiError(403, 'Access denied', 'FORBIDDEN');
+  }
+}
+
+export async function getProviderRequest(provider, requestId) {
+  const request = await findRequestOrFail(requestId);
+
+  await assertProviderCanAccessRequest(request, provider);
+
+  const [detailedRequest, ownQuote] = await Promise.all([
+    ServiceRequest.findById(request.id).populate(PROVIDER_DETAIL_POPULATE),
+    Quote.findOne({ requestId: request.id, providerId: provider.id }),
+  ]);
+
+  return {
+    request: toProviderRequest(detailedRequest, { ownQuote }),
+  };
+}
+
+export async function markRequestQuoteReceived(request) {
+  if (request.status !== REQUEST_STATUSES.PENDING) {
+    return;
+  }
+
+  assertTransition(request.status, REQUEST_STATUSES.QUOTE_RECEIVED);
+
+  await ServiceRequest.updateOne(
+    { _id: request.id, status: REQUEST_STATUSES.PENDING },
+    { $set: { status: REQUEST_STATUSES.QUOTE_RECEIVED } },
+  );
+}
+
+export async function acceptQuoteOnRequest(request, quote, customer) {
+  assertTransition(request.status, REQUEST_STATUSES.QUOTE_ACCEPTED);
+
+  const updated = await ServiceRequest.findOneAndUpdate(
+    { _id: request.id, customerId: customer.id, status: REQUEST_STATUSES.QUOTE_RECEIVED },
+    {
+      $set: {
+        status: REQUEST_STATUSES.QUOTE_ACCEPTED,
+        selectedProviderId: quote.providerId,
+        acceptedQuoteId: quote.id,
+      },
+    },
+    { returnDocument: 'after' },
+  );
+
+  if (!updated) {
+    throw new ApiError(409, 'Service request was updated, please retry', 'REQUEST_CONFLICT');
+  }
+
+  return updated;
+}
+
+export async function presentCustomerRequestById(requestId) {
+  const request = await loadCustomerRequest(requestId);
+
+  return toCustomerRequest(request);
+}
