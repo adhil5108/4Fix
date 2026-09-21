@@ -61,6 +61,19 @@ const serviceRequestSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    issueKey: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      maxlength: 60,
+      default: null,
+    },
+    issueLabel: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+      default: null,
+    },
     description: {
       type: String,
       required: true,

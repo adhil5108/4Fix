@@ -40,6 +40,33 @@ const userSchema = new mongoose.Schema(
       default: true,
       index: true,
     },
+    // Public provider profile. Only meaningful for PROVIDER accounts.
+    profileImage: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+      default: null,
+    },
+    bio: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+      default: null,
+    },
+    serviceCategories: {
+      type: [String],
+      default: [],
+    },
+    experienceYears: {
+      type: Number,
+      min: 0,
+      max: 60,
+      default: null,
+    },
+    isAvailable: {
+      type: Boolean,
+      default: true,
+    },
   },
   {
     timestamps: true,
