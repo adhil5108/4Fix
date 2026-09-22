@@ -26,7 +26,9 @@ const CONFIRMABLE_REQUEST_STATUSES = [
   REQUEST_STATUSES.SCHEDULED,
 ];
 
-const BOOKING_POPULATE = [
+// Exported so the admin booking service can reuse the exact same populate shape
+// instead of redefining it.
+export const BOOKING_POPULATE = [
   { path: 'requestId', populate: { path: 'serviceId' } },
   { path: 'quoteId' },
   { path: 'providerId' },
@@ -138,7 +140,8 @@ export async function confirmBooking(customer, requestId) {
   };
 }
 
-function parseBookingStatusFilter(value) {
+// Exported so the admin booking service can reuse the same status/group parsing.
+export function parseBookingStatusFilter(value) {
   if (value === undefined || value === null || value === '') {
     return null;
   }

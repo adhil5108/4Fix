@@ -1096,3 +1096,438 @@ describe('uploads', () => {
     }
   });
 });
+
+describe('admin', () => {
+  it('every admin endpoint requires authentication and the ADMIN role', async () => {
+    const id = '64b000000000000000000000';
+    const endpoints = [
+      ['GET', '/api/admin/dashboard'],
+      ['GET', '/api/admin/services'],
+      ['POST', '/api/admin/services'],
+      ['GET', `/api/admin/services/${id}`],
+      ['PATCH', `/api/admin/services/${id}`],
+      ['DELETE', `/api/admin/services/${id}`],
+      ['GET', '/api/admin/providers'],
+      ['GET', `/api/admin/providers/${id}`],
+      ['PATCH', `/api/admin/providers/${id}/status`],
+      ['GET', '/api/admin/customers'],
+      ['GET', `/api/admin/customers/${id}`],
+      ['GET', '/api/admin/requests'],
+      ['GET', `/api/admin/requests/${id}`],
+      ['GET', '/api/admin/quotes'],
+      ['GET', `/api/admin/quotes/${id}`],
+      ['POST', `/api/admin/quotes/${id}/assign`],
+      ['GET', '/api/admin/bookings'],
+      ['GET', `/api/admin/bookings/${id}`],
+      ['GET', '/api/admin/payments'],
+      ['GET', `/api/admin/payments/${id}`],
+      ['GET', '/api/admin/reviews'],
+      ['GET', `/api/admin/reviews/${id}`],
+    ];
+
+    for (const [method, path] of endpoints) {
+      assert.equal((await api(method, path)).status, 401, `${method} ${path} (no token)`);
+      assert.equal(
+        (await api(method, path, { token: ctx.customerA.token })).status,
+        403,
+        `${method} ${path} (customer)`,
+      );
+      assert.equal(
+        (await api(method, path, { token: ctx.provider1.token })).status,
+        403,
+        `${method} ${path} (provider)`,
+      );
+    }
+  });
+
+  it('admin can view the dashboard with server-aggregated counts', async () => {
+    const result = await get('/api/admin/dashboard', { token: ctx.admin.token });
+
+    assert.equal(result.status, 200);
+    assert.equal(typeof result.body.counts.totalCustomers, 'number');
+    assert.equal(typeof result.body.counts.totalProviders, 'number');
+    assert.equal(typeof result.body.counts.activeProviders, 'number');
+    assert.equal(typeof result.body.counts.openRequests, 'number');
+    assert.equal(typeof result.body.counts.openQuotes, 'number');
+    assert.equal(typeof result.body.counts.activeBookings, 'number');
+    assert.equal(typeof result.body.counts.completedBookings, 'number');
+    assert.equal(typeof result.body.counts.pendingPayments, 'number');
+    assert.equal(typeof result.body.counts.completedPayments, 'number');
+    assert.ok(Array.isArray(result.body.recent.requests));
+    assert.ok(Array.isArray(result.body.recent.quotes));
+    assert.ok(Array.isArray(result.body.recent.bookings));
+  });
+
+  it('admin can create, list, fetch and update a service', async () => {
+    const created = await post('/api/admin/services', {
+      token: ctx.admin.token,
+      body: {
+        name: 'Pest Control',
+        description: 'Home pest control treatment.',
+        category: 'pest',
+        startingPrice: 799,
+        issues: [
+          { key: 'ants', label: 'Ants' },
+          { key: 'cockroaches', label: 'Cockroaches' },
+        ],
+      },
+    });
+
+    assert.equal(created.status, 201);
+    assert.equal(created.body.service.category, 'PEST');
+    assert.equal(created.body.service.isActive, true);
+    assert.deepEqual(
+      created.body.service.issues.map((issue) => issue.key),
+      ['ANTS', 'COCKROACHES'],
+    );
+    const serviceId = created.body.service.id;
+
+    const listed = await get('/api/admin/services', { token: ctx.admin.token });
+    assert.equal(listed.status, 200);
+    assert.ok(listed.body.services.some((service) => service.id === serviceId));
+    assert.equal(typeof listed.body.total, 'number');
+
+    const fetched = await get(`/api/admin/services/${serviceId}`, { token: ctx.admin.token });
+    assert.equal(fetched.status, 200);
+    assert.equal(fetched.body.service.name, 'Pest Control');
+
+    const updated = await patch(`/api/admin/services/${serviceId}`, {
+      token: ctx.admin.token,
+      body: { startingPrice: 899, isActive: false },
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.service.startingPrice, 899);
+    assert.equal(updated.body.service.isActive, false);
+
+    // Deactivated services drop off the public catalogue immediately.
+    const publicList = await get('/api/services');
+    assert.equal(
+      publicList.body.services.some((service) => service.id === serviceId),
+      false,
+    );
+
+    assert.equal(
+      (await post('/api/admin/services', { token: ctx.customerA.token, body: {} })).status,
+      403,
+    );
+  });
+
+  it('rejects invalid service input', async () => {
+    const missingFields = await post('/api/admin/services', {
+      token: ctx.admin.token,
+      body: { description: 'A short valid description.' },
+    });
+    assert.equal(missingFields.status, 400);
+
+    const duplicateIssueKeys = await post('/api/admin/services', {
+      token: ctx.admin.token,
+      body: {
+        name: 'Duplicate Issue Keys',
+        description: 'Should be rejected.',
+        category: 'MISC',
+        issues: [
+          { key: 'A', label: 'A' },
+          { key: 'a', label: 'Also A' },
+        ],
+      },
+    });
+    assert.equal(duplicateIssueKeys.status, 400);
+  });
+
+  it('deletes a service only when it is not referenced by any request', async () => {
+    const unused = await post('/api/admin/services', {
+      token: ctx.admin.token,
+      body: { name: 'Temp Unused Service', description: 'To be deleted shortly.', category: 'MISC' },
+    });
+
+    const deleted = await api('DELETE', `/api/admin/services/${unused.body.service.id}`, {
+      token: ctx.admin.token,
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal(deleted.body.deleted, true);
+    assert.equal(
+      (await get(`/api/admin/services/${unused.body.service.id}`, { token: ctx.admin.token })).status,
+      404,
+    );
+
+    // ctx.acRepair already has real requests against it from earlier in the suite.
+    const inUse = await api('DELETE', `/api/admin/services/${ctx.acRepair.id}`, {
+      token: ctx.admin.token,
+    });
+    assert.equal(inUse.status, 409);
+    assert.equal(inUse.body.error.code, 'SERVICE_IN_USE');
+  });
+
+  it('admin can list and view providers, and toggle a provider\'s active status', async () => {
+    const listed = await get('/api/admin/providers', { token: ctx.admin.token });
+    assert.equal(listed.status, 200);
+    const row = listed.body.providers.find((provider) => provider.id === ctx.provider1.user.id);
+    assert.ok(row);
+    assert.equal('passwordHash' in row, false);
+
+    const detail = await get(`/api/admin/providers/${ctx.provider1.user.id}`, {
+      token: ctx.admin.token,
+    });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.provider.id, ctx.provider1.user.id);
+    assert.equal('passwordHash' in detail.body.provider, false);
+    assert.ok(Array.isArray(detail.body.quotes));
+    assert.ok(Array.isArray(detail.body.bookings));
+    assert.ok(Array.isArray(detail.body.reviews));
+
+    const temp = await signup('PROVIDER', 'Temp Provider', '9876519001');
+    const deactivated = await patch(`/api/admin/providers/${temp.user.id}/status`, {
+      token: ctx.admin.token,
+      body: { isActive: false },
+    });
+    assert.equal(deactivated.status, 200);
+    assert.equal(deactivated.body.provider.isActive, false);
+
+    // A deactivated account can no longer authenticate with its existing token.
+    assert.equal((await get('/api/auth/me', { token: temp.token })).status, 401);
+
+    const reactivated = await patch(`/api/admin/providers/${temp.user.id}/status`, {
+      token: ctx.admin.token,
+      body: { isActive: true },
+    });
+    assert.equal(reactivated.status, 200);
+    assert.equal(reactivated.body.provider.isActive, true);
+
+    assert.equal(
+      (
+        await patch(`/api/admin/providers/${temp.user.id}/status`, {
+          token: ctx.admin.token,
+          body: { isActive: 'yes' },
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await patch(`/api/admin/providers/${ctx.customerA.user.id}/status`, {
+          token: ctx.admin.token,
+          body: { isActive: false },
+        })
+      ).status,
+      404,
+    );
+  });
+
+  it('admin can list and view customers', async () => {
+    const listed = await get('/api/admin/customers', { token: ctx.admin.token });
+    assert.equal(listed.status, 200);
+    const row = listed.body.customers.find((customer) => customer.id === ctx.customerA.user.id);
+    assert.ok(row);
+    assert.equal('passwordHash' in row, false);
+
+    const detail = await get(`/api/admin/customers/${ctx.customerA.user.id}`, {
+      token: ctx.admin.token,
+    });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.customer.id, ctx.customerA.user.id);
+    assert.equal('passwordHash' in detail.body.customer, false);
+    assert.ok(Array.isArray(detail.body.requests));
+    assert.ok(Array.isArray(detail.body.bookings));
+    assert.ok(Array.isArray(detail.body.payments));
+    assert.ok(Array.isArray(detail.body.reviews));
+
+    assert.equal(
+      (await get('/api/admin/customers/64b000000000000000000000', { token: ctx.admin.token })).status,
+      404,
+    );
+  });
+
+  it('admin can list and filter requests, and view full request detail', async () => {
+    const listed = await get('/api/admin/requests', { token: ctx.admin.token });
+    assert.equal(listed.status, 200);
+    const row = listed.body.requests.find((request) => request.id === ctx.requestA.id);
+    assert.ok(row);
+    assert.equal(row.customer.id, ctx.customerA.user.id);
+
+    const filtered = await get(
+      `/api/admin/requests?customer=${ctx.customerA.user.id}&status=CANCELLED`,
+      { token: ctx.admin.token },
+    );
+    assert.equal(filtered.status, 200);
+    assert.ok(filtered.body.requests.every((request) => request.status === 'CANCELLED'));
+    assert.ok(filtered.body.requests.every((request) => request.customer.id === ctx.customerA.user.id));
+
+    const detail = await get(`/api/admin/requests/${ctx.requestA.id}`, { token: ctx.admin.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.request.customer.id, ctx.customerA.user.id);
+    assert.equal(detail.body.request.status, 'COMPLETED');
+    assert.equal(detail.body.quotes.length, 2);
+    assert.ok(detail.body.booking);
+    assert.equal(detail.body.booking.id, ctx.bookingA.id);
+    assert.ok(detail.body.payment);
+    assert.equal(detail.body.payment.status, 'PAID');
+    assert.ok(detail.body.review);
+    assert.equal(detail.body.review.rating, 4);
+
+    assert.equal(
+      (await get('/api/admin/requests/64b000000000000000000000', { token: ctx.admin.token })).status,
+      404,
+    );
+  });
+
+  it('admin can list and view quotes, and assign an existing quote atomically', async () => {
+    const customer = await signup('CUSTOMER', 'Quote Assign Customer', '9876521001');
+    const created = await post('/api/requests', {
+      token: customer.token,
+      body: requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING' }),
+    });
+    const requestId = created.body.request.id;
+
+    const quoteX = await post(`/api/requests/${requestId}/quotes`, {
+      token: ctx.provider1.token,
+      body: { amount: 1100, description: 'Quote X' },
+    });
+    const quoteY = await post(`/api/requests/${requestId}/quotes`, {
+      token: ctx.provider2.token,
+      body: { amount: 1250, description: 'Quote Y' },
+    });
+
+    const listed = await get(`/api/admin/quotes?request=${requestId}`, { token: ctx.admin.token });
+    assert.equal(listed.status, 200);
+    assert.equal(listed.body.quotes.length, 2);
+    assert.ok(listed.body.quotes.every((quote) => quote.request.id === requestId));
+    assert.ok(listed.body.quotes.every((quote) => quote.isSelected === false));
+
+    const filteredByProvider = await get(`/api/admin/quotes?provider=${ctx.provider1.user.id}`, {
+      token: ctx.admin.token,
+    });
+    assert.ok(filteredByProvider.body.quotes.some((quote) => quote.id === quoteX.body.quote.id));
+
+    const detail = await get(`/api/admin/quotes/${quoteX.body.quote.id}`, { token: ctx.admin.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.quote.provider.id, ctx.provider1.user.id);
+    assert.equal(detail.body.quote.request.customer.id, customer.user.id);
+    assert.equal(detail.body.booking, null);
+
+    // Only an admin may call the assignment endpoint.
+    assert.equal(
+      (await post(`/api/admin/quotes/${quoteX.body.quote.id}/assign`, { token: customer.token })).status,
+      403,
+    );
+    assert.equal(
+      (await post(`/api/admin/quotes/${quoteX.body.quote.id}/assign`, { token: ctx.provider1.token }))
+        .status,
+      403,
+    );
+
+    // Two admins racing to assign different quotes on the same request: exactly one wins.
+    const [resultX, resultY] = await Promise.all([
+      post(`/api/admin/quotes/${quoteX.body.quote.id}/assign`, { token: ctx.admin.token }),
+      post(`/api/admin/quotes/${quoteY.body.quote.id}/assign`, { token: ctx.admin.token }),
+    ]);
+    assert.deepEqual([resultX.status, resultY.status].sort(), [200, 409]);
+
+    const winner = resultX.status === 200 ? resultX : resultY;
+    assert.equal(winner.body.request.status, 'QUOTE_ACCEPTED');
+    assert.equal(winner.body.quote.status, 'ACCEPTED');
+    assert.equal(winner.body.request.selectedProviderId, winner.body.quote.providerId);
+    // No booking exists yet — only the customer's own confirmation step creates one.
+    assert.equal(winner.body.request.booking, null);
+
+    // The quote that just lost the race (or already won) can never be assigned again.
+    assert.equal(
+      (await post(`/api/admin/quotes/${quoteX.body.quote.id}/assign`, { token: ctx.admin.token })).status,
+      409,
+    );
+    assert.equal(
+      (await post(`/api/admin/quotes/${quoteY.body.quote.id}/assign`, { token: ctx.admin.token })).status,
+      409,
+    );
+
+    assert.equal(
+      (await post('/api/admin/quotes/64b000000000000000000000/assign', { token: ctx.admin.token }))
+        .status,
+      404,
+    );
+  });
+
+  it('rejects assigning a quote that is not pending', async () => {
+    // ctx.quote2 lost to ctx.quote1 earlier in the suite and is now REJECTED.
+    const result = await post(`/api/admin/quotes/${ctx.quote2.id}/assign`, { token: ctx.admin.token });
+
+    assert.equal(result.status, 409);
+    assert.equal(result.body.error.code, 'QUOTE_NOT_PENDING');
+  });
+
+  it('admin can list and filter bookings, and view booking detail', async () => {
+    const listed = await get('/api/admin/bookings', { token: ctx.admin.token });
+    assert.equal(listed.status, 200);
+    const row = listed.body.bookings.find((booking) => booking.id === ctx.bookingA.id);
+    assert.ok(row);
+    assert.equal(row.arrivalCode, ctx.bookingA.arrivalCode);
+
+    const filtered = await get('/api/admin/bookings?status=COMPLETED', { token: ctx.admin.token });
+    assert.equal(filtered.status, 200);
+    assert.ok(filtered.body.bookings.every((booking) => booking.status === 'COMPLETED'));
+
+    const detail = await get(`/api/admin/bookings/${ctx.bookingA.id}`, { token: ctx.admin.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.booking.id, ctx.bookingA.id);
+
+    assert.equal(
+      (await get('/api/admin/bookings/64b000000000000000000000', { token: ctx.admin.token })).status,
+      404,
+    );
+  });
+
+  it('admin can list and filter payments, and view payment detail', async () => {
+    const listed = await get('/api/admin/payments', { token: ctx.admin.token });
+    assert.equal(listed.status, 200);
+    const paid = listed.body.payments.find((payment) => payment.bookingId === ctx.bookingA.id);
+    assert.ok(paid);
+    assert.equal(paid.status, 'PAID');
+
+    const filtered = await get('/api/admin/payments?status=PAID', { token: ctx.admin.token });
+    assert.equal(filtered.status, 200);
+    assert.ok(filtered.body.payments.every((payment) => payment.status === 'PAID'));
+
+    const detail = await get(`/api/admin/payments/${paid.id}`, { token: ctx.admin.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.payment.id, paid.id);
+
+    assert.equal(
+      (await get('/api/admin/payments/64b000000000000000000000', { token: ctx.admin.token })).status,
+      404,
+    );
+  });
+
+  it('admin can list and view reviews', async () => {
+    const listed = await get('/api/admin/reviews', { token: ctx.admin.token });
+    assert.equal(listed.status, 200);
+    const row = listed.body.reviews.find((review) => review.bookingId === ctx.bookingA.id);
+    assert.ok(row);
+    assert.equal(row.rating, 4);
+    assert.ok(row.customer?.name);
+
+    const detail = await get(`/api/admin/reviews/${row.id}`, { token: ctx.admin.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.review.id, row.id);
+
+    assert.equal(
+      (await get('/api/admin/reviews/64b000000000000000000000', { token: ctx.admin.token })).status,
+      404,
+    );
+  });
+
+  it('never returns passwordHash from any admin endpoint', async () => {
+    const responses = await Promise.all([
+      get('/api/admin/providers', { token: ctx.admin.token }),
+      get(`/api/admin/providers/${ctx.provider1.user.id}`, { token: ctx.admin.token }),
+      get('/api/admin/customers', { token: ctx.admin.token }),
+      get(`/api/admin/customers/${ctx.customerA.user.id}`, { token: ctx.admin.token }),
+      get('/api/admin/dashboard', { token: ctx.admin.token }),
+      get('/api/admin/requests', { token: ctx.admin.token }),
+      get('/api/admin/bookings', { token: ctx.admin.token }),
+    ]);
+
+    for (const response of responses) {
+      assert.equal(response.status, 200);
+      assert.equal(JSON.stringify(response.body).includes('passwordHash'), false);
+    }
+  });
+});

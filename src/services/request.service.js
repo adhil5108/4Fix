@@ -23,12 +23,14 @@ import {
 } from './requestPresenter.service.js';
 import { getActiveServiceOrFail } from './service.service.js';
 
-const CUSTOMER_POPULATE = [
+// Exported so the admin request service can reuse the exact same populate shapes
+// instead of redefining them.
+export const CUSTOMER_POPULATE = [
   { path: 'serviceId' },
   { path: 'selectedProviderId' },
 ];
 
-const CUSTOMER_DETAIL_POPULATE = [
+export const CUSTOMER_DETAIL_POPULATE = [
   ...CUSTOMER_POPULATE,
   { path: 'acceptedQuoteId', populate: { path: 'providerId' } },
 ];

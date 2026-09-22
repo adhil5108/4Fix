@@ -143,14 +143,17 @@ export async function listRequestQuotes(user, requestId) {
   };
 }
 
-export async function acceptQuote(customer, quoteId) {
-  const { quote, request } = await findCustomerQuoteOrFail(quoteId, customer);
-
+// Shared by the customer's own acceptance and the admin's assignment: same PENDING
+// check, same atomic request-state transition (so two callers racing on the same
+// request can never both win), same quote status updates. `actingCustomer` is who the
+// `acceptQuoteOnRequest` ownership filter matches against — the request's own
+// customer, whether the caller is that customer or an admin acting on their behalf.
+async function assignQuoteToRequest(quote, request, actingCustomer) {
   if (quote.status !== QUOTE_STATUSES.PENDING) {
     throw new ApiError(409, 'Only a pending quote can be accepted', 'QUOTE_NOT_PENDING');
   }
 
-  await acceptQuoteOnRequest(request, quote, customer);
+  await acceptQuoteOnRequest(request, quote, actingCustomer);
 
   await Quote.updateOne(
     { _id: quote.id },
@@ -172,6 +175,27 @@ export async function acceptQuote(customer, quoteId) {
     request: await presentCustomerRequestById(request.id),
     quote: toQuoteForCustomer(acceptedQuote),
   };
+}
+
+export async function acceptQuote(customer, quoteId) {
+  const { quote, request } = await findCustomerQuoteOrFail(quoteId, customer);
+
+  return assignQuoteToRequest(quote, request, customer);
+}
+
+// Admin picks an existing quote for a request; the provider comes from the quote
+// itself, never from the client. Any customer's request is reachable (no ownership
+// check), but the transition, quote-status bookkeeping and concurrency safety are
+// identical to the customer's own acceptance — nothing is duplicated.
+export async function adminAssignQuote(quoteId) {
+  const quote = await findQuoteOrFail(quoteId);
+  const request = await ServiceRequest.findById(quote.requestId);
+
+  if (!request) {
+    throw new ApiError(404, 'Service request not found', 'REQUEST_NOT_FOUND');
+  }
+
+  return assignQuoteToRequest(quote, request, { id: request.customerId });
 }
 
 export async function rejectQuote(customer, quoteId) {
