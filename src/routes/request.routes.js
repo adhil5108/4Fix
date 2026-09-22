@@ -51,9 +51,13 @@ router.post(
   authorizeRoles(USER_ROLES.PROVIDER),
   asyncHandler(createQuote),
 );
+// listRequestQuotes falls into the provider branch for any non-CUSTOMER caller,
+// filtering by { providerId: user.id } — so ADMIN (added for Provider View, where
+// ProviderRequestDetailsPage fetches this alongside the request itself) always sees
+// an empty quote list, never a real provider's pricing.
 router.get(
   '/:requestId/quotes',
-  authorizeRoles(USER_ROLES.CUSTOMER, USER_ROLES.PROVIDER),
+  authorizeRoles(USER_ROLES.CUSTOMER, USER_ROLES.PROVIDER, USER_ROLES.ADMIN),
   asyncHandler(listRequestQuotes),
 );
 

@@ -1823,6 +1823,13 @@ describe('admin area preview (Customer View / Provider View)', () => {
     });
     assert.equal(openRequestView.status, 200);
 
+    // ProviderRequestDetailsPage fetches this alongside the request itself.
+    const openRequestQuotes = await get(`/api/requests/${created.body.request.id}/quotes`, {
+      token: ctx.admin.token,
+    });
+    assert.equal(openRequestQuotes.status, 200);
+    assert.deepEqual(openRequestQuotes.body.quotes, []);
+
     // flow.requestId is already QUOTE_ACCEPTED (a real booking exists) — no longer
     // in the open marketplace, so admin gets the same 403 an uninvolved provider would.
     const bookedRequestView = await get(`/api/provider/requests/${flow.requestId}`, {
