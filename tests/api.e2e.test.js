@@ -510,8 +510,12 @@ describe('bookings', () => {
     const other = await get('/api/bookings', { token: ctx.provider2.token });
     assert.equal(other.body.bookings.length, 0);
 
+    // Admin is allowed onto this endpoint (for the Customer View area preview) but
+    // the filter falls back to { customerId: admin.id }, so it never sees this or
+    // any other real booking — covered in depth in 'admin area preview' below.
     const admin = await get('/api/bookings', { token: ctx.admin.token });
-    assert.equal(admin.status, 403);
+    assert.equal(admin.status, 200);
+    assert.deepEqual(admin.body.bookings, []);
   });
 
   it('supports group and exact status filters', async () => {
@@ -1760,5 +1764,100 @@ describe('voice notes', () => {
 
     const forbidden = await get(`/api/requests/${created.body.request.id}`, { token: stranger.token });
     assert.equal(forbidden.status, 403);
+  });
+});
+
+describe('admin area preview (Customer View / Provider View)', () => {
+  it('GET /api/requests for admin is always empty, never another customer\'s requests', async () => {
+    // ctx.customerA already has real requests from earlier suites.
+    const asAdmin = await get('/api/requests', { token: ctx.admin.token });
+    assert.equal(asAdmin.status, 200);
+    assert.deepEqual(asAdmin.body.requests, []);
+
+    const asCustomer = await get('/api/requests', { token: ctx.customerA.token });
+    assert.ok(asCustomer.body.requests.length > 0);
+  });
+
+  it('GET /api/bookings for admin is always empty, never another user\'s bookings', async () => {
+    // ctx.bookingA already exists from earlier suites.
+    const asAdmin = await get('/api/bookings', { token: ctx.admin.token });
+    assert.equal(asAdmin.status, 200);
+    assert.deepEqual(asAdmin.body.bookings, []);
+  });
+
+  it('GET /api/provider/jobs for admin is always empty, never another provider\'s jobs', async () => {
+    // ctx.provider1 already has real jobs from earlier suites.
+    const asAdmin = await get('/api/provider/jobs', { token: ctx.admin.token });
+    assert.equal(asAdmin.status, 200);
+    assert.deepEqual(asAdmin.body.jobs, []);
+  });
+
+  it('GET /api/provider/requests for admin shows the same open discovery feed a provider sees', async () => {
+    const customer = await signup('CUSTOMER', 'Preview Customer', '9876524001');
+    const created = await post('/api/requests', {
+      token: customer.token,
+      body: requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING' }),
+    });
+    const requestId = created.body.request.id;
+
+    const asAdmin = await get('/api/provider/requests', { token: ctx.admin.token });
+    assert.equal(asAdmin.status, 200);
+    assert.ok(asAdmin.body.requests.some((request) => request.id === requestId));
+
+    const asProvider = await get('/api/provider/requests', { token: ctx.provider1.token });
+    assert.ok(asProvider.body.requests.some((request) => request.id === requestId));
+  });
+
+  it('GET /api/provider/requests/:id lets admin view an open request, but not one already booked', async () => {
+    const customer = await signup('CUSTOMER', 'Preview Customer Two', '9876524002');
+    const provider = await signup('PROVIDER', 'Preview Provider', '9876524011');
+    const flow = await runFullFlow({ customer, provider, complete: false });
+
+    // Still open at creation, before any quote exists.
+    const created = await post('/api/requests', {
+      token: customer.token,
+      body: requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING' }),
+    });
+    const openRequestView = await get(`/api/provider/requests/${created.body.request.id}`, {
+      token: ctx.admin.token,
+    });
+    assert.equal(openRequestView.status, 200);
+
+    // flow.requestId is already QUOTE_ACCEPTED (a real booking exists) — no longer
+    // in the open marketplace, so admin gets the same 403 an uninvolved provider would.
+    const bookedRequestView = await get(`/api/provider/requests/${flow.requestId}`, {
+      token: ctx.admin.token,
+    });
+    assert.equal(bookedRequestView.status, 403);
+  });
+
+  it('admin previewing the customer/provider side still cannot perform any customer/provider mutation', async () => {
+    const customer = await signup('CUSTOMER', 'Preview Mutation Customer', '9876524003');
+    const provider = await signup('PROVIDER', 'Preview Mutation Provider', '9876524012');
+    const flow = await runFullFlow({ customer, provider, complete: false });
+
+    const attempts = [
+      ['POST', '/api/requests', { serviceId: ctx.acRepair.id }],
+      ['POST', `/api/requests/${flow.requestId}/cancel`, {}],
+      ['POST', `/api/requests/${flow.requestId}/confirm`, {}],
+      ['POST', `/api/requests/${flow.requestId}/quotes`, { amount: 100, description: 'x' }],
+      ['POST', `/api/requests/${flow.requestId}/schedule`, {}],
+      ['POST', `/api/requests/${flow.requestId}/start`, {}],
+      ['POST', `/api/requests/${flow.requestId}/complete`, {}],
+      ['POST', `/api/quotes/${flow.quoteId}/accept`, {}],
+      ['POST', `/api/quotes/${flow.quoteId}/reject`, {}],
+      ['POST', `/api/bookings/${flow.bookingId}/assign`, {}],
+      ['POST', `/api/bookings/${flow.bookingId}/on-the-way`, {}],
+      ['POST', `/api/bookings/${flow.bookingId}/arrived`, {}],
+      ['PATCH', `/api/bookings/${flow.bookingId}/location`, { latitude: 1, longitude: 1 }],
+      ['POST', `/api/bookings/${flow.bookingId}/chat`, {}],
+      ['POST', `/api/bookings/${flow.bookingId}/messages`, { message: 'hi' }],
+      ['POST', `/api/bookings/${flow.bookingId}/review`, { rating: 5 }],
+    ];
+
+    for (const [method, path, body] of attempts) {
+      const result = await api(method, path, { token: ctx.admin.token, body });
+      assert.equal(result.status, 403, `${method} ${path} unexpectedly allowed for admin (got ${result.status})`);
+    }
   });
 });

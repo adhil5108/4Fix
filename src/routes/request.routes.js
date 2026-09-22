@@ -21,7 +21,14 @@ const router = Router();
 router.use(asyncHandler(authenticate));
 
 router.post('/', authorizeRoles(USER_ROLES.CUSTOMER), asyncHandler(createRequest));
-router.get('/', authorizeRoles(USER_ROLES.CUSTOMER), asyncHandler(listRequests));
+// ADMIN read-only for the "Customer View" area switcher: listCustomerRequests filters
+// by the caller's own id, so an admin (who owns none) always sees an empty list —
+// never another customer's requests. No admin write access is granted here.
+router.get(
+  '/',
+  authorizeRoles(USER_ROLES.CUSTOMER, USER_ROLES.ADMIN),
+  asyncHandler(listRequests),
+);
 router.get('/:requestId', authorizeRoles(USER_ROLES.CUSTOMER), asyncHandler(getRequest));
 router.post(
   '/:requestId/cancel',

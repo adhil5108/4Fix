@@ -28,7 +28,10 @@ const router = Router();
 router.use(asyncHandler(authenticate));
 
 // Ownership is enforced inside the services from req.user; roles only gate the verb.
-router.get('/', authorizeRoles(CUSTOMER, PROVIDER), asyncHandler(listBookings));
+// listBookings falls back to { customerId: user.id } for any non-PROVIDER caller, so
+// ADMIN (added for the "Customer View" area switcher) always sees an empty list —
+// never another customer's or provider's bookings.
+router.get('/', authorizeRoles(CUSTOMER, PROVIDER, ADMIN), asyncHandler(listBookings));
 router.get('/:bookingId', authorizeRoles(CUSTOMER, PROVIDER, ADMIN), asyncHandler(getBooking));
 router.get(
   '/:bookingId/tracking',
