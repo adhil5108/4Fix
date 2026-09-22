@@ -26,6 +26,7 @@ export function toMessage(message, viewer) {
     id: message.id,
     conversationId: toIdString(message.conversationId),
     senderId: toIdString(message.senderId),
+    senderRole: message.senderRole,
     isMine: isSameId(message.senderId, viewer.id),
     message: message.message,
     attachments: message.attachments,

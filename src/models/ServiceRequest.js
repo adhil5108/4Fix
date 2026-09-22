@@ -47,6 +47,34 @@ const addressSchema = new mongoose.Schema(
   },
 );
 
+// Optional customer voice note captured at request creation. Absent on every request
+// created before this field existed, and on any request created without recording one.
+const voiceNoteSchema = new mongoose.Schema(
+  {
+    url: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 500,
+    },
+    format: {
+      type: String,
+      trim: true,
+      maxlength: 40,
+      default: null,
+    },
+    durationSeconds: {
+      type: Number,
+      default: null,
+      min: 0,
+      max: 600,
+    },
+  },
+  {
+    _id: false,
+  },
+);
+
 const serviceRequestSchema = new mongoose.Schema(
   {
     customerId: {
@@ -83,6 +111,10 @@ const serviceRequestSchema = new mongoose.Schema(
     attachments: {
       type: [String],
       default: [],
+    },
+    voiceNote: {
+      type: voiceNoteSchema,
+      default: null,
     },
     address: {
       type: addressSchema,

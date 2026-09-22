@@ -41,9 +41,20 @@ router.post('/:bookingId/on-the-way', authorizeRoles(PROVIDER), asyncHandler(mar
 router.post('/:bookingId/arrived', authorizeRoles(PROVIDER), asyncHandler(markArrived));
 router.patch('/:bookingId/location', authorizeRoles(PROVIDER), asyncHandler(updateLocation));
 
+// Admin can read any conversation platform-wide (ADMIN bypasses ownership inside
+// findBookingForUser) but never open/send/mark-read on someone else's behalf — that
+// keeps admin read-only with respect to chat, never able to act as a participant.
 router.post('/:bookingId/chat', authorizeRoles(CUSTOMER, PROVIDER), asyncHandler(openConversation));
-router.get('/:bookingId/chat', authorizeRoles(CUSTOMER, PROVIDER), asyncHandler(getConversation));
-router.get('/:bookingId/messages', authorizeRoles(CUSTOMER, PROVIDER), asyncHandler(listMessages));
+router.get(
+  '/:bookingId/chat',
+  authorizeRoles(CUSTOMER, PROVIDER, ADMIN),
+  asyncHandler(getConversation),
+);
+router.get(
+  '/:bookingId/messages',
+  authorizeRoles(CUSTOMER, PROVIDER, ADMIN),
+  asyncHandler(listMessages),
+);
 router.post('/:bookingId/messages', authorizeRoles(CUSTOMER, PROVIDER), asyncHandler(sendMessage));
 router.post(
   '/:bookingId/messages/read',

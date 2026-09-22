@@ -982,6 +982,7 @@ describe('security', () => {
       ['PATCH', '/api/users/me'],
       ['GET', '/api/auth/me'],
       ['POST', '/api/uploads/image'],
+      ['POST', '/api/uploads/audio'],
     ];
 
     for (const [method, path] of endpoints) {
@@ -1460,6 +1461,9 @@ describe('admin', () => {
     const row = listed.body.bookings.find((booking) => booking.id === ctx.bookingA.id);
     assert.ok(row);
     assert.equal(row.arrivalCode, ctx.bookingA.arrivalCode);
+    // Admin needs both identities at once, unlike a participant viewing their own booking.
+    assert.equal(row.customer?.id, ctx.customerA.user.id);
+    assert.equal(row.provider?.id, ctx.provider1.user.id);
 
     const filtered = await get('/api/admin/bookings?status=COMPLETED', { token: ctx.admin.token });
     assert.equal(filtered.status, 200);
@@ -1468,6 +1472,8 @@ describe('admin', () => {
     const detail = await get(`/api/admin/bookings/${ctx.bookingA.id}`, { token: ctx.admin.token });
     assert.equal(detail.status, 200);
     assert.equal(detail.body.booking.id, ctx.bookingA.id);
+    assert.equal(detail.body.booking.customer?.id, ctx.customerA.user.id);
+    assert.equal(detail.body.booking.provider?.id, ctx.provider1.user.id);
 
     assert.equal(
       (await get('/api/admin/bookings/64b000000000000000000000', { token: ctx.admin.token })).status,
@@ -1529,5 +1535,230 @@ describe('admin', () => {
       assert.equal(response.status, 200);
       assert.equal(JSON.stringify(response.body).includes('passwordHash'), false);
     }
+  });
+});
+
+describe('admin chat access', () => {
+  it('admin can read any conversation platform-wide, with sender identity intact', async () => {
+    // Conversation + 2 messages already exist on ctx.bookingA from the 'chat' suite above.
+    const path = (suffix) => `/api/bookings/${ctx.bookingA.id}${suffix}`;
+
+    const conversation = await get(path('/chat'), { token: ctx.admin.token });
+    assert.equal(conversation.status, 200);
+    assert.equal(conversation.body.conversation.bookingId, ctx.bookingA.id);
+
+    const messages = await get(path('/messages'), { token: ctx.admin.token });
+    assert.equal(messages.status, 200);
+    assert.ok(messages.body.messages.length >= 2);
+    assert.ok(messages.body.messages.every((message) => ['CUSTOMER', 'PROVIDER'].includes(message.senderRole)));
+  });
+
+  it('admin is read-only: cannot open, send or mark a conversation read', async () => {
+    const path = (suffix) => `/api/bookings/${ctx.bookingA.id}${suffix}`;
+
+    assert.equal((await post(path('/chat'), { token: ctx.admin.token })).status, 403);
+    assert.equal(
+      (await post(path('/messages'), { token: ctx.admin.token, body: { message: 'hi' } })).status,
+      403,
+    );
+    assert.equal((await post(path('/messages/read'), { token: ctx.admin.token })).status, 403);
+  });
+
+  it('reports 404, not a bypass, for a conversation that was never started', async () => {
+    const customer = await signup('CUSTOMER', 'Chat Admin Customer', '9876522001');
+    const provider = await signup('PROVIDER', 'Chat Admin Provider', '9876522011');
+    const flow = await runFullFlow({ customer, provider, complete: false });
+
+    const result = await get(`/api/bookings/${flow.bookingId}/chat`, { token: ctx.admin.token });
+    assert.equal(result.status, 404);
+  });
+});
+
+async function uploadAudioRequest({
+  token,
+  mimeType = 'audio/webm',
+  filename = 'note.webm',
+  bytes,
+  omitFile = false,
+} = {}) {
+  const formData = new FormData();
+
+  if (!omitFile) {
+    const content = bytes || new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    formData.append('audio', new Blob([content], { type: mimeType }), filename);
+  }
+
+  const response = await fetch(`${baseUrl}/api/uploads/audio`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  });
+  const body = await response.json().catch(() => ({}));
+
+  return { status: response.status, body };
+}
+
+describe('voice notes', () => {
+  it('the upload endpoint is customer-only', async () => {
+    assert.equal((await uploadAudioRequest({ token: ctx.provider1.token })).status, 403);
+    assert.equal((await uploadAudioRequest({ token: ctx.admin.token })).status, 403);
+  });
+
+  it('rejects when no audio field is provided', async () => {
+    const result = await uploadAudioRequest({ token: ctx.customerA.token, omitFile: true });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.error.code, 'AUDIO_REQUIRED');
+  });
+
+  it('rejects non-audio file types', async () => {
+    const result = await uploadAudioRequest({
+      token: ctx.customerA.token,
+      mimeType: 'text/plain',
+      filename: 'notes.txt',
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.error.code, 'INVALID_FILE_TYPE');
+  });
+
+  it('rejects files over 10MB', async () => {
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 1024);
+    const result = await uploadAudioRequest({ token: ctx.customerA.token, bytes: oversized });
+    assert.equal(result.status, 413);
+    assert.equal(result.body.error.code, 'FILE_TOO_LARGE');
+  });
+
+  it('uploads successfully and returns asset info', async () => {
+    const restore = mockCloudinaryUpload(async () => ({
+      secure_url:
+        'https://res.cloudinary.com/demo/video/upload/v1700000000/4fix/voice-notes/abc123.webm',
+      public_id: '4fix/voice-notes/abc123',
+      format: 'webm',
+      duration: 12.4,
+    }));
+
+    try {
+      const result = await uploadAudioRequest({ token: ctx.customerA.token });
+
+      assert.equal(result.status, 201);
+      assert.equal(
+        result.body.audio.url,
+        'https://res.cloudinary.com/demo/video/upload/v1700000000/4fix/voice-notes/abc123.webm',
+      );
+      assert.equal(result.body.audio.format, 'webm');
+      assert.equal(result.body.audio.durationSeconds, 12.4);
+    } finally {
+      restore();
+    }
+  });
+
+  it('creates a request without a voice note exactly as before', async () => {
+    const result = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING' }),
+    });
+    assert.equal(result.status, 201);
+    assert.equal(result.body.request.voiceNote, null);
+  });
+
+  it('creates a request with a valid voice note and persists it', async () => {
+    const voiceNote = {
+      url: 'https://res.cloudinary.com/demo/video/upload/v1700000000/4fix/voice-notes/xyz789.webm',
+      format: 'webm',
+      durationSeconds: 42,
+    };
+
+    const created = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING', voiceNote }),
+    });
+    assert.equal(created.status, 201);
+    assert.deepEqual(created.body.request.voiceNote, voiceNote);
+
+    const fetched = await get(`/api/requests/${created.body.request.id}`, {
+      token: ctx.customerA.token,
+    });
+    assert.deepEqual(fetched.body.request.voiceNote, voiceNote);
+  });
+
+  it('rejects an invalid voice note payload', async () => {
+    const missingUrl = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, {
+        issueKey: 'NOT_COOLING',
+        voiceNote: { format: 'webm' },
+      }),
+    });
+    assert.equal(missingUrl.status, 400);
+
+    const badFormat = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, {
+        issueKey: 'NOT_COOLING',
+        voiceNote: { url: 'https://res.cloudinary.com/demo/x.exe', format: 'exe' },
+      }),
+    });
+    assert.equal(badFormat.status, 400);
+
+    const negativeDuration = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, {
+        issueKey: 'NOT_COOLING',
+        voiceNote: { url: 'https://res.cloudinary.com/demo/x.webm', durationSeconds: -1 },
+      }),
+    });
+    assert.equal(negativeDuration.status, 400);
+  });
+
+  it('is visible to the provider, and on the admin request/booking views, once booked', async () => {
+    const customer = await signup('CUSTOMER', 'Voice Note Customer', '9876523001');
+    const provider = await signup('PROVIDER', 'Voice Note Provider', '9876523011');
+    const voiceNote = {
+      url: 'https://res.cloudinary.com/demo/video/upload/v1700000000/4fix/voice-notes/job123.webm',
+      format: 'webm',
+      durationSeconds: 18,
+    };
+
+    const created = await post('/api/requests', {
+      token: customer.token,
+      body: requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING', voiceNote }),
+    });
+    const requestId = created.body.request.id;
+
+    const providerView = await get(`/api/provider/requests/${requestId}`, { token: provider.token });
+    assert.equal(providerView.status, 200);
+    assert.deepEqual(providerView.body.request.voiceNote, voiceNote);
+
+    const adminRequestView = await get(`/api/admin/requests/${requestId}`, { token: ctx.admin.token });
+    assert.equal(adminRequestView.status, 200);
+    assert.deepEqual(adminRequestView.body.request.voiceNote, voiceNote);
+
+    const quoted = await post(`/api/requests/${requestId}/quotes`, {
+      token: provider.token,
+      body: { amount: 999, description: 'Fix it' },
+    });
+    await post(`/api/quotes/${quoted.body.quote.id}/accept`, { token: customer.token });
+    const confirmed = await post(`/api/requests/${requestId}/confirm`, { token: customer.token });
+
+    const adminBookingView = await get(`/api/admin/bookings/${confirmed.body.booking.id}`, {
+      token: ctx.admin.token,
+    });
+    assert.equal(adminBookingView.status, 200);
+    assert.deepEqual(adminBookingView.body.booking.request.voiceNote, voiceNote);
+  });
+
+  it('never lets one customer see another customer\'s request, voice note included', async () => {
+    const owner = await signup('CUSTOMER', 'Voice Owner', '9876523051');
+    const stranger = await signup('CUSTOMER', 'Voice Stranger', '9876523052');
+    const voiceNote = {
+      url: 'https://res.cloudinary.com/demo/video/upload/v1700000000/4fix/voice-notes/private1.webm',
+    };
+
+    const created = await post('/api/requests', {
+      token: owner.token,
+      body: requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING', voiceNote }),
+    });
+
+    const forbidden = await get(`/api/requests/${created.body.request.id}`, { token: stranger.token });
+    assert.equal(forbidden.status, 403);
   });
 });

@@ -22,6 +22,18 @@ export function toAddress(address) {
   };
 }
 
+export function toVoiceNote(voiceNote) {
+  if (!voiceNote) {
+    return null;
+  }
+
+  return {
+    url: voiceNote.url,
+    format: voiceNote.format ?? null,
+    durationSeconds: voiceNote.durationSeconds ?? null,
+  };
+}
+
 function toRequestBase(request) {
   return {
     id: request.id,
@@ -31,6 +43,7 @@ function toRequestBase(request) {
     issueLabel: request.issueLabel ?? null,
     description: request.description,
     attachments: request.attachments,
+    voiceNote: toVoiceNote(request.voiceNote),
     address: toAddress(request.address),
     preferredDate: toDateOnlyString(request.preferredDate),
     preferredTime: request.preferredTime,

@@ -1,6 +1,6 @@
 import { toDateOnlyString } from '../utils/dateTime.js';
 import { toIdString } from '../utils/objectId.js';
-import { isPopulated, toAddress } from './requestPresenter.service.js';
+import { isPopulated, toAddress, toVoiceNote } from './requestPresenter.service.js';
 import { toPublicService } from './servicePresenter.service.js';
 import { toProviderSummary, toUserSummary } from './userPresenter.service.js';
 
@@ -16,6 +16,7 @@ function toBookingRequest(request) {
     issueLabel: request.issueLabel ?? null,
     description: request.description,
     attachments: request.attachments,
+    voiceNote: toVoiceNote(request.voiceNote),
     address: toAddress(request.address),
     preferredDate: toDateOnlyString(request.preferredDate),
     preferredTime: request.preferredTime,
@@ -81,6 +82,16 @@ export function toBookingForCustomer(booking) {
 export function toBookingForProvider(booking) {
   return {
     ...toBookingBase(booking),
+    customer: isPopulated(booking.customerId) ? toUserSummary(booking.customerId) : null,
+    customerId: toIdString(booking.customerId),
+  };
+}
+
+// Admin needs both identities at once (unlike a participant, who already knows who
+// they are) — composed from the customer view rather than duplicating its fields.
+export function toBookingForAdmin(booking) {
+  return {
+    ...toBookingForCustomer(booking),
     customer: isPopulated(booking.customerId) ? toUserSummary(booking.customerId) : null,
     customerId: toIdString(booking.customerId),
   };

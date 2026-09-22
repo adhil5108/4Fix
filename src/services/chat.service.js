@@ -1,5 +1,6 @@
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
+import { emitToBooking } from '../realtime/socket.js';
 import { ApiError } from '../utils/ApiError.js';
 import { requiredText, stringList } from '../utils/text.js';
 import { findBookingForUser } from './booking.service.js';
@@ -116,12 +117,19 @@ export async function sendMessage(user, bookingId, input) {
   const message = await Message.create({
     conversationId: conversation.id,
     senderId: user.id,
+    senderRole: user.role,
     message: text,
     attachments,
     readAt: null,
   });
 
   await Conversation.updateOne({ _id: conversation.id }, { $currentDate: { updatedAt: true } });
+
+  // `isMine` in toMessage() is computed for one specific viewer, which is wrong for
+  // everyone else in the room, so the broadcast omits it — each client compares
+  // senderId against its own user id instead.
+  const { isMine: _isMine, ...broadcastMessage } = toMessage(message, user);
+  emitToBooking(bookingId, 'message:new', broadcastMessage);
 
   return {
     message: toMessage(message, user),
@@ -141,6 +149,10 @@ export async function markMessagesRead(user, bookingId) {
     { conversationId: conversation.id, senderId: { $ne: user.id }, readAt: null },
     { $set: { readAt: new Date() } },
   );
+
+  if (result.modifiedCount > 0) {
+    emitToBooking(bookingId, 'messages:read', { bookingId, readBy: user.id });
+  }
 
   return { updatedCount: result.modifiedCount };
 }

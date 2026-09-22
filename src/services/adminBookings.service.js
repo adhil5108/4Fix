@@ -4,7 +4,7 @@ import { parseDateOnly } from '../utils/dateTime.js';
 import { parseObjectId } from '../utils/objectId.js';
 import { parsePagination, toPageResult } from '../utils/pagination.js';
 import { BOOKING_POPULATE, parseBookingStatusFilter } from './booking.service.js';
-import { toBookingForCustomer } from './bookingPresenter.service.js';
+import { toBookingForAdmin } from './bookingPresenter.service.js';
 
 export async function listAdminBookings(query) {
   const pagination = parsePagination(query);
@@ -44,9 +44,9 @@ export async function listAdminBookings(query) {
     Booking.countDocuments(filter),
   ]);
 
-  // Admin sees the same shape a customer would for their own booking (including the
-  // arrival code), matching the access level GET /api/bookings/:id already grants ADMIN.
-  return toPageResult('bookings', bookings.map(toBookingForCustomer), pagination, total);
+  // Admin sees both identities at once — the arrival code too, matching the access
+  // level GET /api/bookings/:id already grants ADMIN.
+  return toPageResult('bookings', bookings.map(toBookingForAdmin), pagination, total);
 }
 
 export async function getAdminBooking(bookingId) {
@@ -57,5 +57,5 @@ export async function getAdminBooking(bookingId) {
     throw new ApiError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
   }
 
-  return { booking: toBookingForCustomer(booking) };
+  return { booking: toBookingForAdmin(booking) };
 }

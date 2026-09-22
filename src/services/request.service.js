@@ -61,6 +61,46 @@ function validateAttachments(attachments) {
   );
 }
 
+const AUDIO_FORMATS = ['webm', 'ogg', 'mp4', 'm4a', 'mpeg', 'mp3', 'wav', 'aac'];
+
+// Client-derived (url from a prior upload, duration from the recorder timer) — trusted
+// the same way photo `attachments` URLs already are. Bounds here are a sanity check,
+// not the primary control (that's the upload endpoint's own size/type validation).
+function validateVoiceNote(voiceNote) {
+  if (voiceNote === undefined || voiceNote === null) {
+    return null;
+  }
+
+  if (typeof voiceNote !== 'object' || Array.isArray(voiceNote)) {
+    throw new ApiError(400, 'Voice note must be an object', 'VALIDATION_ERROR');
+  }
+
+  const url = requiredText(voiceNote.url, 'Voice note URL', 1, 500);
+  let format = null;
+
+  if (voiceNote.format !== undefined && voiceNote.format !== null && voiceNote.format !== '') {
+    format = requiredText(voiceNote.format, 'Voice note format', 1, 40).toLowerCase();
+
+    if (!AUDIO_FORMATS.includes(format)) {
+      throw new ApiError(400, 'Unsupported voice note format', 'VALIDATION_ERROR');
+    }
+  }
+
+  let durationSeconds = null;
+
+  if (voiceNote.durationSeconds !== undefined && voiceNote.durationSeconds !== null) {
+    const value = Number(voiceNote.durationSeconds);
+
+    if (!Number.isFinite(value) || value < 0 || value > 600) {
+      throw new ApiError(400, 'Voice note duration is invalid', 'VALIDATION_ERROR');
+    }
+
+    durationSeconds = value;
+  }
+
+  return { url, format, durationSeconds };
+}
+
 function validateAddress(address) {
   if (!address || typeof address !== 'object' || Array.isArray(address)) {
     throw new ApiError(400, 'Address is required', 'VALIDATION_ERROR');
@@ -155,6 +195,7 @@ export async function createRequest(customer, input) {
   const issue = resolveIssue(service, input?.issueKey);
   const description = requiredText(input?.description, 'Description', 5, 2000);
   const attachments = validateAttachments(input?.attachments);
+  const voiceNote = validateVoiceNote(input?.voiceNote);
   const address = validateAddress(input?.address);
   const preferredDate = parseDateOnly(input?.preferredDate, 'Preferred date');
   const preferredTime = normalizeTimeOfDay(input?.preferredTime, 'Preferred time');
@@ -168,6 +209,7 @@ export async function createRequest(customer, input) {
     issueLabel: issue.issueLabel,
     description,
     attachments,
+    voiceNote,
     address,
     preferredDate,
     preferredTime,
