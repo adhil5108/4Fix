@@ -11,9 +11,11 @@ import {
   startTestServer,
   stopTestServer,
 } from './helpers.js';
+import cloudinary from '../src/config/cloudinary.js';
 
 // Shared fixtures; suites below run in file order and build on each other.
 const ctx = {};
+let baseUrl;
 
 async function seedServices() {
   const { default: Service } = await import('../src/models/Service.js');
@@ -110,7 +112,7 @@ async function runFullFlow({ customer, provider, complete = true }) {
 }
 
 before(async () => {
-  await startTestServer();
+  baseUrl = await startTestServer();
   await seedServices();
   await seedAdmin();
 
@@ -979,6 +981,7 @@ describe('security', () => {
       ['GET', `/api/bookings/${id}/review`],
       ['PATCH', '/api/users/me'],
       ['GET', '/api/auth/me'],
+      ['POST', '/api/uploads/image'],
     ];
 
     for (const [method, path] of endpoints) {
@@ -991,5 +994,105 @@ describe('security', () => {
     assert.equal((await get('/api/services')).status, 200);
     assert.equal((await get(`/api/providers/${ctx.provider1.user.id}`)).status, 200);
     assert.equal((await get(`/api/providers/${ctx.provider1.user.id}/reviews`)).status, 200);
+  });
+});
+
+async function uploadRequest({ token, mimeType = 'image/png', filename = 'photo.png', bytes, omitFile = false } = {}) {
+  const formData = new FormData();
+
+  if (!omitFile) {
+    const content = bytes || new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    formData.append('image', new Blob([content], { type: mimeType }), filename);
+  }
+
+  const response = await fetch(`${baseUrl}/api/uploads/image`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  });
+  const body = await response.json().catch(() => ({}));
+
+  return { status: response.status, body };
+}
+
+function mockCloudinaryUpload(implementation) {
+  const original = cloudinary.uploader.upload;
+  cloudinary.uploader.upload = implementation;
+  return () => {
+    cloudinary.uploader.upload = original;
+  };
+}
+
+describe('uploads', () => {
+  it('rejects unauthenticated requests', async () => {
+    const result = await uploadRequest({});
+    assert.equal(result.status, 401);
+  });
+
+  it('rejects when no image field is provided', async () => {
+    const result = await uploadRequest({ token: ctx.customerA.token, omitFile: true });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.error.code, 'IMAGE_REQUIRED');
+  });
+
+  it('rejects non-image file types', async () => {
+    const result = await uploadRequest({
+      token: ctx.customerA.token,
+      mimeType: 'text/plain',
+      filename: 'notes.txt',
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.error.code, 'INVALID_FILE_TYPE');
+  });
+
+  it('rejects files over 5MB', async () => {
+    const oversized = new Uint8Array(5 * 1024 * 1024 + 1024);
+    const result = await uploadRequest({ token: ctx.customerA.token, bytes: oversized });
+    assert.equal(result.status, 413);
+    assert.equal(result.body.error.code, 'FILE_TOO_LARGE');
+  });
+
+  it('uploads successfully and returns asset info', async () => {
+    const restore = mockCloudinaryUpload(async () => ({
+      secure_url: 'https://res.cloudinary.com/demo/image/upload/v1700000000/4fix/abc123.png',
+      public_id: '4fix/abc123',
+      width: 800,
+      height: 600,
+      format: 'png',
+    }));
+
+    try {
+      const result = await uploadRequest({ token: ctx.customerA.token });
+
+      assert.equal(result.status, 201);
+      assert.deepEqual(result.body.image, {
+        url: 'https://res.cloudinary.com/demo/image/upload/v1700000000/4fix/abc123.png',
+        publicId: '4fix/abc123',
+        width: 800,
+        height: 600,
+        format: 'png',
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('handles Cloudinary failures without leaking secrets', async () => {
+    const restore = mockCloudinaryUpload(async () => {
+      throw new Error('Cloudinary rejected the upload: invalid api_secret');
+    });
+
+    try {
+      const result = await uploadRequest({ token: ctx.customerA.token });
+
+      assert.equal(result.status, 502);
+      assert.equal(result.body.error.code, 'UPLOAD_FAILED');
+
+      const raw = JSON.stringify(result.body);
+      assert.equal(/api[_-]?secret/i.test(raw), false);
+      assert.equal(raw.includes('invalid api_secret'), false);
+    } finally {
+      restore();
+    }
   });
 });

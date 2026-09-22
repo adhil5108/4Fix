@@ -8,6 +8,7 @@ import providersRoutes from './routes/providers.routes.js';
 import quoteRoutes from './routes/quote.routes.js';
 import requestRoutes from './routes/request.routes.js';
 import serviceRoutes from './routes/service.routes.js';
+import uploadRoutes from './routes/upload.routes.js';
 import userRoutes from './routes/user.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -24,6 +25,7 @@ app.use('/api/quotes', quoteRoutes);
 app.use('/api/provider', providerRoutes);
 app.use('/api/providers', providersRoutes);
 app.use('/api/bookings', bookingRoutes);
+app.use('/api/uploads', uploadRoutes);
 app.use('/api/users', userRoutes);
 
 app.use(errorHandler);
