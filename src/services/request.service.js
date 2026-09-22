@@ -1,4 +1,6 @@
+import Booking, { BOOKING_STATUSES } from '../models/Booking.js';
 import Quote from '../models/Quote.js';
+import { OTHER_ISSUE_KEY } from '../models/Service.js';
 import ServiceRequest, { REQUEST_STATUSES } from '../models/ServiceRequest.js';
 import { ApiError } from '../utils/ApiError.js';
 import {
@@ -6,13 +8,16 @@ import {
   normalizeTimeOfDay,
   parseDateOnly,
 } from '../utils/dateTime.js';
-import { isSameId, parseObjectId } from '../utils/objectId.js';
+import { isSameId, parseObjectId, toIdString } from '../utils/objectId.js';
 import {
   assertTransition,
   QUOTABLE_REQUEST_STATUSES,
 } from '../utils/requestStateMachine.js';
+import { requiredText } from '../utils/text.js';
+import { syncBookingWithRequest } from './bookingSync.service.js';
 import {
   toCustomerRequest,
+  toProviderJob,
   toProviderRequest,
   toProviderRequestSummary,
 } from './requestPresenter.service.js';
@@ -30,27 +35,11 @@ const CUSTOMER_DETAIL_POPULATE = [
 
 const PROVIDER_DETAIL_POPULATE = [{ path: 'serviceId' }, { path: 'customerId' }];
 
-function requiredText(value, fieldName, minLength, maxLength) {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
-
-  if (trimmed.length < minLength) {
-    throw new ApiError(
-      400,
-      `${fieldName} must be at least ${minLength} characters`,
-      'VALIDATION_ERROR',
-    );
-  }
-
-  if (trimmed.length > maxLength) {
-    throw new ApiError(
-      400,
-      `${fieldName} must be ${maxLength} characters or fewer`,
-      'VALIDATION_ERROR',
-    );
-  }
-
-  return trimmed;
-}
+const PROVIDER_JOB_POPULATE = [
+  { path: 'serviceId' },
+  { path: 'customerId' },
+  { path: 'acceptedQuoteId' },
+];
 
 function validateAttachments(attachments) {
   if (attachments === undefined || attachments === null) {
@@ -93,7 +82,30 @@ function validateAddress(address) {
   };
 }
 
-function parseStatusFilter(value, allowedStatuses) {
+// The issue is optional (V1 clients do not send it). When present it must be one of the
+// service's active issues or OTHER; the label always comes from the service, never
+// from the client.
+function resolveIssue(service, issueKey) {
+  if (issueKey === undefined || issueKey === null || issueKey === '') {
+    return { issueKey: null, issueLabel: null };
+  }
+
+  const key = requiredText(issueKey, 'Issue', 1, 60).toUpperCase();
+
+  if (key === OTHER_ISSUE_KEY) {
+    return { issueKey: key, issueLabel: 'Something else' };
+  }
+
+  const issue = (service.issues || []).find((item) => item.isActive && item.key === key);
+
+  if (!issue) {
+    throw new ApiError(400, 'Issue is not available for this service', 'VALIDATION_ERROR');
+  }
+
+  return { issueKey: issue.key, issueLabel: issue.label };
+}
+
+export function parseStatusFilter(value, allowedStatuses) {
   if (value === undefined || value === null || value === '') {
     return null;
   }
@@ -138,6 +150,7 @@ async function loadCustomerRequest(requestId) {
 
 export async function createRequest(customer, input) {
   const service = await getActiveServiceOrFail(input?.serviceId);
+  const issue = resolveIssue(service, input?.issueKey);
   const description = requiredText(input?.description, 'Description', 5, 2000);
   const attachments = validateAttachments(input?.attachments);
   const address = validateAddress(input?.address);
@@ -149,6 +162,8 @@ export async function createRequest(customer, input) {
   const created = await ServiceRequest.create({
     customerId: customer.id,
     serviceId: service.id,
+    issueKey: issue.issueKey,
+    issueLabel: issue.issueLabel,
     description,
     attachments,
     address,
@@ -187,13 +202,14 @@ export async function listCustomerRequests(customer, query) {
 
 export async function getCustomerRequest(customer, requestId) {
   const request = await findCustomerRequestOrFail(requestId, customer);
-  const [detailedRequest, quotesCount] = await Promise.all([
+  const [detailedRequest, quotesCount, booking] = await Promise.all([
     loadCustomerRequest(request.id),
     Quote.countDocuments({ requestId: request.id }),
+    Booking.findOne({ requestId: request.id }),
   ]);
 
   return {
-    request: toCustomerRequest(detailedRequest, { quotesCount }),
+    request: toCustomerRequest(detailedRequest, { quotesCount, booking }),
   };
 }
 
@@ -211,6 +227,8 @@ export async function cancelRequest(customer, requestId) {
   if (!cancelled) {
     throw new ApiError(409, 'Service request was updated, please retry', 'REQUEST_CONFLICT');
   }
+
+  await syncBookingWithRequest(cancelled);
 
   return {
     request: toCustomerRequest(cancelled),
@@ -235,6 +253,8 @@ async function applyProviderTransition(provider, requestId, targetStatus, extraF
   if (!updated) {
     throw new ApiError(409, 'Service request was updated, please retry', 'REQUEST_CONFLICT');
   }
+
+  await syncBookingWithRequest(updated);
 
   const ownQuote = await Quote.findOne({ requestId: updated.id, providerId: provider.id });
 
@@ -274,6 +294,37 @@ export async function listAvailableRequests(_provider, query) {
   return {
     requests: requests.map(toProviderRequestSummary),
   };
+}
+
+// Jobs the customer awarded to this provider, with booking state when one exists.
+export async function listProviderJobs(provider, query) {
+  const status = parseStatusFilter(query?.status, Object.values(REQUEST_STATUSES));
+  const bookingStatus = parseStatusFilter(query?.bookingStatus, Object.values(BOOKING_STATUSES));
+  const filter = { selectedProviderId: provider.id };
+
+  if (status) {
+    filter.status = status;
+  }
+
+  const requests = await ServiceRequest.find(filter)
+    .sort({ updatedAt: -1 })
+    .populate(PROVIDER_JOB_POPULATE);
+
+  const bookings = await Booking.find({
+    requestId: { $in: requests.map((request) => request._id) },
+    providerId: provider.id,
+  });
+  const bookingByRequest = new Map(
+    bookings.map((booking) => [toIdString(booking.requestId), booking]),
+  );
+
+  let jobs = requests.map((request) => toProviderJob(request, bookingByRequest.get(request.id)));
+
+  if (bookingStatus) {
+    jobs = jobs.filter((job) => job.bookingStatus === bookingStatus);
+  }
+
+  return { jobs };
 }
 
 export async function assertProviderCanAccessRequest(request, provider) {
@@ -342,7 +393,10 @@ export async function acceptQuoteOnRequest(request, quote, customer) {
 }
 
 export async function presentCustomerRequestById(requestId) {
-  const request = await loadCustomerRequest(requestId);
+  const [request, booking] = await Promise.all([
+    loadCustomerRequest(requestId),
+    Booking.findOne({ requestId }),
+  ]);
 
-  return toCustomerRequest(request);
+  return toCustomerRequest(request, { booking });
 }

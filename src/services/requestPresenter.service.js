@@ -2,13 +2,13 @@ import { toDateOnlyString } from '../utils/dateTime.js';
 import { toIdString } from '../utils/objectId.js';
 import { toQuoteForCustomer, toQuoteForProvider } from './quotePresenter.service.js';
 import { toPublicService } from './servicePresenter.service.js';
-import { toUserSummary } from './userPresenter.service.js';
+import { toProviderSummary, toUserSummary } from './userPresenter.service.js';
 
-function isPopulated(value) {
+export function isPopulated(value) {
   return Boolean(value) && typeof value === 'object' && value._id !== undefined;
 }
 
-function toAddress(address) {
+export function toAddress(address) {
   if (!address) {
     return null;
   }
@@ -27,6 +27,8 @@ function toRequestBase(request) {
     id: request.id,
     service: isPopulated(request.serviceId) ? toPublicService(request.serviceId) : null,
     serviceId: toIdString(request.serviceId),
+    issueKey: request.issueKey ?? null,
+    issueLabel: request.issueLabel ?? null,
     description: request.description,
     attachments: request.attachments,
     address: toAddress(request.address),
@@ -40,11 +42,15 @@ function toRequestBase(request) {
   };
 }
 
-export function toCustomerRequest(request, { quotesCount } = {}) {
+function toBookingRef(booking) {
+  return { id: booking.id, status: booking.bookingStatus };
+}
+
+export function toCustomerRequest(request, { quotesCount, booking } = {}) {
   return {
     ...toRequestBase(request),
     selectedProvider: isPopulated(request.selectedProviderId)
-      ? toUserSummary(request.selectedProviderId)
+      ? toProviderSummary(request.selectedProviderId)
       : null,
     selectedProviderId: toIdString(request.selectedProviderId),
     acceptedQuote: isPopulated(request.acceptedQuoteId)
@@ -52,6 +58,7 @@ export function toCustomerRequest(request, { quotesCount } = {}) {
       : null,
     acceptedQuoteId: toIdString(request.acceptedQuoteId),
     ...(quotesCount === undefined ? {} : { quotesCount }),
+    ...(booking === undefined ? {} : { booking: booking ? toBookingRef(booking) : null }),
   };
 }
 
@@ -66,5 +73,26 @@ export function toProviderRequest(request, { ownQuote } = {}) {
     customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
     selectedProviderId: toIdString(request.selectedProviderId),
     ownQuote: ownQuote ? toQuoteForProvider(ownQuote) : null,
+  };
+}
+
+// A job the provider has won: the request plus its booking's operational state.
+export function toProviderJob(request, booking) {
+  return {
+    ...toRequestBase(request),
+    customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
+    amount: isPopulated(request.acceptedQuoteId) ? request.acceptedQuoteId.amount : null,
+    bookingId: booking ? booking.id : null,
+    bookingStatus: booking ? booking.bookingStatus : null,
+    tracking: booking
+      ? {
+          confirmedAt: booking.confirmedAt,
+          technicianAssignedAt: booking.technicianAssignedAt,
+          onTheWayAt: booking.onTheWayAt,
+          arrivedAt: booking.arrivedAt,
+          technicianStartedAt: booking.technicianStartedAt,
+          completedAt: booking.completedAt,
+        }
+      : null,
   };
 }

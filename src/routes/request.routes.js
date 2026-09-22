@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { confirmBooking } from '../controllers/booking.controller.js';
+import { listRequestProviders } from '../controllers/provider.controller.js';
 import {
   cancelRequest,
   completeRequest,
@@ -25,6 +27,16 @@ router.post(
   '/:requestId/cancel',
   authorizeRoles(USER_ROLES.CUSTOMER),
   asyncHandler(cancelRequest),
+);
+router.get(
+  '/:requestId/providers',
+  authorizeRoles(USER_ROLES.CUSTOMER),
+  asyncHandler(listRequestProviders),
+);
+router.post(
+  '/:requestId/confirm',
+  authorizeRoles(USER_ROLES.CUSTOMER),
+  asyncHandler(confirmBooking),
 );
 
 router.post(

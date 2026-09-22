@@ -1,3 +1,5 @@
+import { OTHER_ISSUE_KEY } from '../models/Service.js';
+
 export function toPublicService(service) {
   if (!service) {
     return null;
@@ -30,8 +32,15 @@ export function toServiceDetail(service) {
     return null;
   }
 
+  const issues = (service.issues || []).filter((issue) => issue.isActive).map(toServiceIssue);
+
+  // "Something else" is always offered so the customer can describe a problem freely.
+  if (!issues.some((issue) => issue.key === OTHER_ISSUE_KEY)) {
+    issues.push({ key: OTHER_ISSUE_KEY, label: 'Something else', description: null });
+  }
+
   return {
     ...toPublicService(service),
-    issues: (service.issues || []).filter((issue) => issue.isActive).map(toServiceIssue),
+    issues,
   };
 }
