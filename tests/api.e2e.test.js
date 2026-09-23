@@ -3,6 +3,7 @@ import { after, before, describe, it } from 'node:test';
 import {
   api,
   dateOnly,
+  del,
   get,
   patch,
   post,
@@ -733,6 +734,306 @@ describe('chat', () => {
       { token: ctx.customerA.token },
     );
     assert.equal(since.body.messages.length, 1);
+  });
+});
+
+describe('provider job notes', () => {
+  const path = (suffix) => `/api/bookings/${ctx.bookingA.id}${suffix}`;
+
+  it('rejects access from anyone but the assigned provider', async () => {
+    assert.equal((await get(path('/notes'))).status, 401);
+    assert.equal((await post(path('/notes'), { body: { content: 'x' } })).status, 401);
+
+    assert.equal((await get(path('/notes'), { token: ctx.customerA.token })).status, 403);
+    assert.equal(
+      (await post(path('/notes'), { token: ctx.customerA.token, body: { content: 'x' } })).status,
+      403,
+    );
+    assert.equal((await get(path('/notes'), { token: ctx.admin.token })).status, 403);
+    assert.equal(
+      (await post(path('/notes'), { token: ctx.admin.token, body: { content: 'x' } })).status,
+      403,
+    );
+    assert.equal((await get(path('/notes'), { token: ctx.provider2.token })).status, 403);
+    assert.equal(
+      (await post(path('/notes'), { token: ctx.provider2.token, body: { content: 'x' } })).status,
+      403,
+    );
+  });
+
+  it('rejects empty notes and notes over the length limit', async () => {
+    const empty = await post(path('/notes'), { token: ctx.provider1.token, body: { content: '   ' } });
+    assert.equal(empty.status, 400);
+
+    const tooLong = await post(path('/notes'), {
+      token: ctx.provider1.token,
+      body: { content: 'a'.repeat(2001) },
+    });
+    assert.equal(tooLong.status, 400);
+  });
+
+  it('lets the assigned provider add, list, edit and delete their own notes', async () => {
+    const first = await post(path('/notes'), {
+      token: ctx.provider1.token,
+      body: { content: 'Replaced capacitor and checked outdoor unit.' },
+    });
+    assert.equal(first.status, 201);
+    assert.equal(first.body.note.content, 'Replaced capacitor and checked outdoor unit.');
+    assert.equal(first.body.note.jobId, ctx.bookingA.id);
+
+    const second = await post(path('/notes'), {
+      token: ctx.provider1.token,
+      body: { content: 'Customer requested follow-up next month.' },
+    });
+    assert.equal(second.status, 201);
+
+    const list = await get(path('/notes'), { token: ctx.provider1.token });
+    assert.equal(list.status, 200);
+    assert.equal(list.body.notes.length, 2);
+    // Newest/most-recently-updated first.
+    assert.equal(list.body.notes[0].id, second.body.note.id);
+    assert.equal(list.body.notes[1].id, first.body.note.id);
+
+    const noteId = second.body.note.id;
+    const edited = await patch(path(`/notes/${noteId}`), {
+      token: ctx.provider1.token,
+      body: { content: 'Customer requested follow-up in two weeks.' },
+    });
+    assert.equal(edited.status, 200);
+    assert.equal(edited.body.note.content, 'Customer requested follow-up in two weeks.');
+
+    const afterEdit = await get(path('/notes'), { token: ctx.provider1.token });
+    assert.equal(afterEdit.body.notes[0].id, noteId);
+    assert.equal(afterEdit.body.notes[0].content, 'Customer requested follow-up in two weeks.');
+
+    const deleted = await del(path(`/notes/${noteId}`), { token: ctx.provider1.token });
+    assert.equal(deleted.status, 200);
+
+    const afterDelete = await get(path('/notes'), { token: ctx.provider1.token });
+    assert.equal(afterDelete.body.notes.length, 1);
+    assert.equal(afterDelete.body.notes[0].id, first.body.note.id);
+  });
+
+  it('never lets another provider or the customer edit or delete a note on this job', async () => {
+    const own = await post(path('/notes'), {
+      token: ctx.provider1.token,
+      body: { content: 'Note for ownership checks.' },
+    });
+    const ownId = own.body.note.id;
+
+    assert.equal(
+      (
+        await patch(path(`/notes/${ownId}`), {
+          token: ctx.provider2.token,
+          body: { content: 'hijacked' },
+        })
+      ).status,
+      403,
+    );
+    assert.equal((await del(path(`/notes/${ownId}`), { token: ctx.provider2.token })).status, 403);
+    assert.equal(
+      (
+        await patch(path(`/notes/${ownId}`), {
+          token: ctx.customerA.token,
+          body: { content: 'hijacked' },
+        })
+      ).status,
+      403,
+    );
+    assert.equal((await del(path(`/notes/${ownId}`), { token: ctx.customerA.token })).status, 403);
+  });
+
+  it('never surfaces provider notes through the booking responses customers and admin see', async () => {
+    const customerView = await get(path(''), { token: ctx.customerA.token });
+    assert.equal(customerView.status, 200);
+    assert.equal('notes' in customerView.body.booking, false);
+
+    const adminView = await get(path(''), { token: ctx.admin.token });
+    assert.equal(adminView.status, 200);
+    assert.equal('notes' in adminView.body.booking, false);
+  });
+});
+
+describe('external jobs', () => {
+  const path = (suffix = '') => `/api/provider/external-jobs${suffix}`;
+
+  function payload(overrides = {}) {
+    return {
+      customerName: 'Walk-in Customer',
+      customerPhone: '9998887777',
+      serviceLabel: 'AC gas refill',
+      description: 'Customer called directly, AC not cooling.',
+      address: {
+        addressLine: '7 Direct Lane',
+        city: 'Bengaluru',
+        state: 'Karnataka',
+        pincode: '560002',
+      },
+      scheduledDate: dateOnly(1),
+      scheduledTime: '14:00',
+      ...overrides,
+    };
+  }
+
+  it('requires authentication and the PROVIDER role', async () => {
+    assert.equal((await post(path(), { body: payload() })).status, 401);
+    assert.equal((await post(path(), { token: ctx.customerA.token, body: payload() })).status, 403);
+    assert.equal((await post(path(), { token: ctx.admin.token, body: payload() })).status, 403);
+  });
+
+  it('validates required fields', async () => {
+    assert.equal(
+      (await post(path(), { token: ctx.provider1.token, body: payload({ customerName: '' }) })).status,
+      400,
+    );
+    assert.equal(
+      (await post(path(), { token: ctx.provider1.token, body: payload({ serviceLabel: '' }) })).status,
+      400,
+    );
+    assert.equal(
+      (await post(path(), { token: ctx.provider1.token, body: payload({ description: '' }) })).status,
+      400,
+    );
+
+    const base = payload();
+    assert.equal(
+      (
+        await post(path(), {
+          token: ctx.provider1.token,
+          body: payload({ address: { ...base.address, addressLine: '' } }),
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await post(path(), {
+          token: ctx.provider1.token,
+          body: payload({ address: { ...base.address, pincode: '123' } }),
+        })
+      ).status,
+      400,
+    );
+  });
+
+  it('does not create a ServiceRequest, Quote or Payment', async () => {
+    const { default: ServiceRequest } = await import('../src/models/ServiceRequest.js');
+    const { default: Quote } = await import('../src/models/Quote.js');
+    const { default: Payment } = await import('../src/models/Payment.js');
+
+    const [beforeRequests, beforeQuotes, beforePayments] = await Promise.all([
+      ServiceRequest.countDocuments(),
+      Quote.countDocuments(),
+      Payment.countDocuments(),
+    ]);
+
+    const created = await post(path(), { token: ctx.provider1.token, body: payload() });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.job.source, 'EXTERNAL');
+    assert.equal(created.body.job.status, 'SCHEDULED');
+    assert.equal(created.body.job.customer.name, 'Walk-in Customer');
+    ctx.externalJobId = created.body.job.id;
+
+    const [afterRequests, afterQuotes, afterPayments] = await Promise.all([
+      ServiceRequest.countDocuments(),
+      Quote.countDocuments(),
+      Payment.countDocuments(),
+    ]);
+
+    assert.equal(afterRequests, beforeRequests);
+    assert.equal(afterQuotes, beforeQuotes);
+    assert.equal(afterPayments, beforePayments);
+  });
+
+  it('provider sees their own external job in My Jobs, alongside 4Fix jobs', async () => {
+    const jobs = await get('/api/provider/jobs', { token: ctx.provider1.token });
+    assert.equal(jobs.status, 200);
+
+    const external = jobs.body.jobs.find((job) => job.id === ctx.externalJobId);
+    assert.ok(external);
+    assert.equal(external.source, 'EXTERNAL');
+
+    const fourFix = jobs.body.jobs.find((job) => job.id === ctx.requestA.id);
+    assert.ok(fourFix);
+    assert.equal(fourFix.source, '4FIX');
+  });
+
+  it('provider can read, update and walk the lifecycle of their own external job', async () => {
+    const fetched = await get(path(`/${ctx.externalJobId}`), { token: ctx.provider1.token });
+    assert.equal(fetched.status, 200);
+    assert.equal(fetched.body.job.customer.name, 'Walk-in Customer');
+
+    const updated = await patch(path(`/${ctx.externalJobId}`), {
+      token: ctx.provider1.token,
+      body: payload({ customerName: 'Renamed Customer' }),
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.job.customer.name, 'Renamed Customer');
+
+    assert.equal(
+      (await post(path(`/${ctx.externalJobId}/complete`), { token: ctx.provider1.token })).status,
+      409,
+    );
+
+    const onTheWay = await post(path(`/${ctx.externalJobId}/on-the-way`), { token: ctx.provider1.token });
+    assert.equal(onTheWay.status, 200);
+    assert.equal(onTheWay.body.job.status, 'ON_THE_WAY');
+
+    const arrived = await post(path(`/${ctx.externalJobId}/arrived`), { token: ctx.provider1.token });
+    assert.equal(arrived.body.job.status, 'ARRIVED');
+
+    const started = await post(path(`/${ctx.externalJobId}/start`), { token: ctx.provider1.token });
+    assert.equal(started.body.job.status, 'IN_PROGRESS');
+
+    const completed = await post(path(`/${ctx.externalJobId}/complete`), { token: ctx.provider1.token });
+    assert.equal(completed.body.job.status, 'COMPLETED');
+  });
+
+  it('never lets another provider or a customer access, update or delete this job', async () => {
+    assert.equal((await get(path(`/${ctx.externalJobId}`), { token: ctx.provider2.token })).status, 404);
+    assert.equal(
+      (await patch(path(`/${ctx.externalJobId}`), { token: ctx.provider2.token, body: payload() })).status,
+      404,
+    );
+    assert.equal((await del(path(`/${ctx.externalJobId}`), { token: ctx.provider2.token })).status, 404);
+    assert.equal((await get(path(`/${ctx.externalJobId}`), { token: ctx.customerA.token })).status, 403);
+    assert.equal((await get(path(`/${ctx.externalJobId}`))).status, 401);
+  });
+
+  it('keeps private notes attached to the external job itself, not a separate resource', async () => {
+    const note = await post(path(`/${ctx.externalJobId}/notes`), {
+      token: ctx.provider1.token,
+      body: { content: 'Used a spare capacitor from the van.' },
+    });
+    assert.equal(note.status, 201);
+    assert.equal(note.body.note.jobId, ctx.externalJobId);
+
+    const list = await get(path(`/${ctx.externalJobId}/notes`), { token: ctx.provider1.token });
+    assert.equal(list.status, 200);
+    assert.equal(list.body.notes.length, 1);
+
+    assert.equal(
+      (await get(path(`/${ctx.externalJobId}/notes`), { token: ctx.provider2.token })).status,
+      404,
+    );
+  });
+
+  it('provider can delete their own external job', async () => {
+    const deleted = await del(path(`/${ctx.externalJobId}`), { token: ctx.provider1.token });
+    assert.equal(deleted.status, 200);
+    assert.equal((await get(path(`/${ctx.externalJobId}`), { token: ctx.provider1.token })).status, 404);
+  });
+
+  it('existing 4Fix jobs still appear and work normally', async () => {
+    const jobs = await get('/api/provider/jobs', { token: ctx.provider1.token });
+    assert.equal(jobs.status, 200);
+
+    const fourFix = jobs.body.jobs.find((job) => job.id === ctx.requestA.id);
+    assert.ok(fourFix);
+    assert.equal(fourFix.source, '4FIX');
+    assert.equal(fourFix.bookingId, ctx.bookingA.id);
+
+    assert.equal((await get(`/api/bookings/${ctx.bookingA.id}`, { token: ctx.provider1.token })).status, 200);
   });
 });
 

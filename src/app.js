@@ -3,6 +3,7 @@ import express from 'express';
 import adminRoutes from './routes/admin.routes.js';
 import authRoutes from './routes/auth.routes.js';
 import bookingRoutes from './routes/booking.routes.js';
+import externalJobRoutes from './routes/externalJob.routes.js';
 import healthRoutes from './routes/health.routes.js';
 import providerRoutes from './routes/provider.routes.js';
 import providersRoutes from './routes/providers.routes.js';
@@ -24,6 +25,8 @@ app.use('/api/health', healthRoutes);
 app.use('/api/services', serviceRoutes);
 app.use('/api/requests', requestRoutes);
 app.use('/api/quotes', quoteRoutes);
+// More specific than '/api/provider' below, so it must be registered first.
+app.use('/api/provider/external-jobs', externalJobRoutes);
 app.use('/api/provider', providerRoutes);
 app.use('/api/providers', providersRoutes);
 app.use('/api/bookings', bookingRoutes);

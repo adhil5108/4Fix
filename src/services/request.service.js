@@ -15,6 +15,7 @@ import {
 } from '../utils/requestStateMachine.js';
 import { requiredText } from '../utils/text.js';
 import { syncBookingWithRequest } from './bookingSync.service.js';
+import { listExternalJobsForProvider } from './externalJob.service.js';
 import {
   toCustomerRequest,
   toProviderJob,
@@ -366,6 +367,16 @@ export async function listProviderJobs(provider, query) {
 
   if (bookingStatus) {
     jobs = jobs.filter((job) => job.bookingStatus === bookingStatus);
+  }
+
+  // External jobs use their own status vocabulary (SCHEDULED/ON_THE_WAY/…), which
+  // doesn't map onto `status`/`bookingStatus` filters, so they only join the default,
+  // unfiltered "My Jobs" call — filtered calls keep their exact previous behavior.
+  if (!status && !bookingStatus) {
+    const externalJobs = await listExternalJobsForProvider(provider.id);
+    jobs = [...jobs, ...externalJobs].sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+    );
   }
 
   return { jobs };

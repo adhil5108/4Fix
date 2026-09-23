@@ -93,6 +93,7 @@ export function toProviderRequest(request, { ownQuote } = {}) {
 export function toProviderJob(request, booking) {
   return {
     ...toRequestBase(request),
+    source: '4FIX',
     customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
     amount: isPopulated(request.acceptedQuoteId) ? request.acceptedQuoteId.amount : null,
     bookingId: booking ? booking.id : null,

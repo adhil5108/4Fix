@@ -60,6 +60,7 @@ export async function api(method, path, { token, body } = {}) {
 export const get = (path, options) => api('GET', path, options);
 export const post = (path, options) => api('POST', path, options);
 export const patch = (path, options) => api('PATCH', path, options);
+export const del = (path, options) => api('DELETE', path, options);
 
 export function dateOnly(daysFromNow) {
   const date = new Date();

@@ -16,6 +16,12 @@ import {
   sendMessage,
 } from '../controllers/chat.controller.js';
 import { getPayment, markPaymentPaid } from '../controllers/payment.controller.js';
+import {
+  createNote,
+  deleteNote,
+  listNotes,
+  updateNote,
+} from '../controllers/providerJobNote.controller.js';
 import { createReview, getReview } from '../controllers/review.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorizeRoles } from '../middleware/authorizeRoles.js';
@@ -78,5 +84,12 @@ router.post(
 
 router.post('/:bookingId/review', authorizeRoles(CUSTOMER), asyncHandler(createReview));
 router.get('/:bookingId/review', authorizeRoles(CUSTOMER, PROVIDER, ADMIN), asyncHandler(getReview));
+
+// Private to the assigned provider only — unlike chat/payment, neither the customer
+// nor admin can read or write these (ownership re-checked in the service too).
+router.get('/:bookingId/notes', authorizeRoles(PROVIDER), asyncHandler(listNotes));
+router.post('/:bookingId/notes', authorizeRoles(PROVIDER), asyncHandler(createNote));
+router.patch('/:bookingId/notes/:noteId', authorizeRoles(PROVIDER), asyncHandler(updateNote));
+router.delete('/:bookingId/notes/:noteId', authorizeRoles(PROVIDER), asyncHandler(deleteNote));
 
 export default router;
