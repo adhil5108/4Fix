@@ -1,15 +1,10 @@
 import mongoose from 'mongoose';
 import Booking, { BOOKING_STATUSES } from '../models/Booking.js';
-import Quote, { ACTIVE_QUOTE_STATUSES } from '../models/Quote.js';
 import Review from '../models/Review.js';
-import Service from '../models/Service.js';
 import User, { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
-import { isSameId, parseObjectId, toIdString } from '../utils/objectId.js';
+import { parseObjectId, toIdString } from '../utils/objectId.js';
 import { toPublicProvider } from './providerPresenter.service.js';
-import { findCustomerRequestOrFail } from './request.service.js';
-
-const MAX_DISCOVERY_RESULTS = 50;
 
 // Rating/review/completed-job counts are derived from Review and Booking documents so
 // there is a single source of truth; nothing is cached on the User.
@@ -65,66 +60,5 @@ export async function getPublicProvider(providerId) {
 
   return {
     provider: toPublicProvider(provider, stats.get(provider.id)),
-  };
-}
-
-// Customer-facing discovery: providers who can take this request, with their own quote
-// for it (if any). The customer already owns every quote on their request, so this
-// exposes nothing they could not see via GET /requests/:id/quotes.
-export async function listProvidersForRequest(customer, requestId) {
-  const request = await findCustomerRequestOrFail(requestId, customer);
-  const [service, quotes] = await Promise.all([
-    Service.findById(request.serviceId),
-    Quote.find({ requestId: request.id, status: { $in: ACTIVE_QUOTE_STATUSES } }),
-  ]);
-
-  const quoteByProvider = new Map(quotes.map((quote) => [toIdString(quote.providerId), quote]));
-  const eligibility = { isAvailable: true };
-
-  if (service?.category) {
-    // Providers without declared categories are treated as general providers.
-    eligibility.$or = [
-      { serviceCategories: { $size: 0 } },
-      { serviceCategories: service.category },
-    ];
-  }
-
-  const providers = await User.find({
-    role: USER_ROLES.PROVIDER,
-    isActive: true,
-    $or: [eligibility, { _id: { $in: [...quoteByProvider.keys()] } }],
-  })
-    .sort({ createdAt: 1 })
-    .limit(MAX_DISCOVERY_RESULTS);
-
-  const stats = await getProviderStats(providers.map((provider) => provider.id));
-
-  const list = providers.map((provider) => {
-    const quote = quoteByProvider.get(provider.id);
-
-    return {
-      ...toPublicProvider(provider, stats.get(provider.id)),
-      isSelected: isSameId(request.selectedProviderId, provider.id),
-      quote: quote
-        ? {
-            id: quote.id,
-            amount: quote.amount,
-            description: quote.description,
-            status: quote.status,
-          }
-        : null,
-    };
-  });
-
-  list.sort(
-    (left, right) =>
-      Number(right.isSelected) - Number(left.isSelected) ||
-      Number(Boolean(right.quote)) - Number(Boolean(left.quote)) ||
-      (right.rating ?? 0) - (left.rating ?? 0),
-  );
-
-  return {
-    requestId: request.id,
-    providers: list,
   };
 }

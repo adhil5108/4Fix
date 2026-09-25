@@ -92,8 +92,6 @@ export function requestPayload(serviceId, overrides = {}) {
       state: 'Karnataka',
       pincode: '560001',
     },
-    preferredDate: dateOnly(2),
-    preferredTime: '10:30',
     ...overrides,
   };
 }

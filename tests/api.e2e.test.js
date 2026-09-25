@@ -72,7 +72,8 @@ async function seedAdmin() {
   ctx.admin = { token: login.body.accessToken, user: login.body.user };
 }
 
-// Drives a request through the full happy path and returns its ids.
+// Drives a request through the full V1 happy path (create → provider accepts →
+// schedule → start → complete) and returns its ids. No quote, no payment.
 async function runFullFlow({ customer, provider, complete = true }) {
   const created = await post('/api/requests', {
     token: customer.token,
@@ -81,20 +82,9 @@ async function runFullFlow({ customer, provider, complete = true }) {
   assert.equal(created.status, 201);
   const requestId = created.body.request.id;
 
-  const quoted = await post(`/api/requests/${requestId}/quotes`, {
-    token: provider.token,
-    body: { amount: 1200, description: 'Gas refill and service' },
-  });
-  assert.equal(quoted.status, 201);
-
-  const accepted = await post(`/api/quotes/${quoted.body.quote.id}/accept`, {
-    token: customer.token,
-  });
+  const accepted = await post(`/api/requests/${requestId}/accept`, { token: provider.token });
   assert.equal(accepted.status, 200);
-
-  const confirmed = await post(`/api/requests/${requestId}/confirm`, { token: customer.token });
-  assert.equal(confirmed.status, 200);
-  const bookingId = confirmed.body.booking.id;
+  const bookingId = accepted.body.booking.id;
 
   if (complete) {
     const scheduled = await post(`/api/requests/${requestId}/schedule`, {
@@ -109,7 +99,7 @@ async function runFullFlow({ customer, provider, complete = true }) {
     );
   }
 
-  return { requestId, bookingId, quoteId: quoted.body.quote.id, amount: 1200 };
+  return { requestId, bookingId };
 }
 
 before(async () => {
@@ -238,7 +228,86 @@ describe('requests', () => {
     ctx.requestLegacy = legacy.body.request;
   });
 
+  it('creates requests with description only, with photos, with voice, and with everything', async () => {
+    const photos = [
+      'https://res.cloudinary.com/demo/image/upload/v1/4fix/a.png',
+      'https://res.cloudinary.com/demo/image/upload/v1/4fix/b.jpg',
+    ];
+    const voiceNote = {
+      url: 'https://res.cloudinary.com/demo/video/upload/v1/4fix/voice-notes/v.webm',
+      format: 'webm',
+      durationSeconds: 9,
+    };
+    const location = { latitude: 12.97, longitude: 77.59, address: 'Gate 2' };
+
+    const descriptionOnly = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id),
+    });
+    assert.equal(descriptionOnly.status, 201);
+    assert.deepEqual(descriptionOnly.body.request.attachments, []);
+    assert.equal(descriptionOnly.body.request.voiceNote, null);
+    assert.equal(descriptionOnly.body.request.status, 'PENDING');
+    assert.equal(descriptionOnly.body.request.selectedProviderId, null);
+    assert.equal(descriptionOnly.body.request.preferredDate, null);
+
+    const withPhotos = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, { attachments: photos }),
+    });
+    assert.equal(withPhotos.status, 201);
+    assert.deepEqual(withPhotos.body.request.attachments, photos);
+
+    const withVoice = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, { voiceNote }),
+    });
+    assert.equal(withVoice.status, 201);
+    assert.deepEqual(withVoice.body.request.voiceNote, voiceNote);
+
+    const everything = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, {
+        address: undefined,
+        attachments: photos,
+        voiceNote,
+        location,
+      }),
+    });
+    assert.equal(everything.status, 201);
+    assert.deepEqual(everything.body.request.attachments, photos);
+    assert.deepEqual(everything.body.request.voiceNote, voiceNote);
+    assert.equal(everything.body.request.location.latitude, 12.97);
+    assert.equal(everything.body.request.address, null);
+
+    // These extra requests are cancelled so they stay out of the provider feed below.
+    for (const created of [descriptionOnly, withPhotos, withVoice, everything]) {
+      assert.equal(
+        (await post(`/api/requests/${created.body.request.id}/cancel`, { token: ctx.customerA.token })).status,
+        200,
+      );
+    }
+  });
+
   it('validates input', async () => {
+    const missingDescription = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, { description: '   ' }),
+    });
+    assert.equal(missingDescription.status, 400);
+
+    const tooShort = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(ctx.acRepair.id, { description: 'hot' }),
+    });
+    assert.equal(tooShort.status, 400);
+
+    const missingService = await post('/api/requests', {
+      token: ctx.customerA.token,
+      body: requestPayload(undefined),
+    });
+    assert.equal(missingService.status, 400);
+
     const missingAddress = await post('/api/requests', {
       token: ctx.customerA.token,
       body: { ...requestPayload(ctx.acRepair.id), address: undefined },
@@ -283,29 +352,6 @@ describe('requests', () => {
 });
 
 describe('providers', () => {
-  it('discovers available providers for the customer who owns the request', async () => {
-    const result = await get(`/api/requests/${ctx.requestA.id}/providers`, {
-      token: ctx.customerA.token,
-    });
-
-    assert.equal(result.status, 200);
-    const ids = result.body.providers.map((provider) => provider.id).sort();
-    assert.deepEqual(ids, [ctx.provider1.user.id, ctx.provider2.user.id].sort());
-
-    const provider = result.body.providers[0];
-    assert.equal(provider.quote, null);
-    assert.equal(provider.rating, null);
-    assert.equal(provider.reviewCount, 0);
-    assert.equal(provider.completedJobs, 0);
-    assert.equal('username' in provider, false);
-    assert.equal('passwordHash' in provider, false);
-
-    const forbidden = await get(`/api/requests/${ctx.requestA.id}/providers`, {
-      token: ctx.customerB.token,
-    });
-    assert.equal(forbidden.status, 403);
-  });
-
   it('serves a public provider profile without private fields', async () => {
     const updated = await patch('/api/users/me', {
       token: ctx.provider1.token,
@@ -337,158 +383,184 @@ describe('providers', () => {
     const empty = await patch('/api/users/me', { token: ctx.customerA.token, body: {} });
     assert.equal(empty.status, 400);
   });
+});
 
-  it('excludes providers whose categories do not cover the service', async () => {
-    const plumber = await patch('/api/users/me', {
-      token: ctx.provider2.token,
-      body: { serviceCategories: ['PLUMBING'] },
-    });
-    assert.equal(plumber.status, 200);
+describe('provider acceptance', () => {
+  it('providers see open requests without the customer\'s exact location', async () => {
+    const feed = await get('/api/provider/requests', { token: ctx.provider1.token });
+    assert.equal(feed.status, 200);
+    const listed = feed.body.requests.find((request) => request.id === ctx.requestA.id);
+    assert.ok(listed);
+    assert.equal(listed.service.name, 'AC Repair');
+    assert.equal(listed.description, ctx.requestA.description);
+    assert.equal(listed.address.city, 'Bengaluru');
+    assert.equal(listed.address.addressLine, null);
+    assert.equal('location' in listed, false);
+    assert.equal('customer' in listed, false);
 
-    const result = await get(`/api/requests/${ctx.requestLegacy.id}/providers`, {
-      token: ctx.customerA.token,
-    });
-    assert.deepEqual(
-      result.body.providers.map((provider) => provider.id),
-      [ctx.provider1.user.id],
+    const detail = await get(`/api/provider/requests/${ctx.requestA.id}`, { token: ctx.provider2.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.request.location, null);
+    assert.equal(detail.body.request.address.addressLine, null);
+    assert.equal(detail.body.request.bookingId, null);
+
+    // Cancelled requests never appear in the feed.
+    assert.ok(!feed.body.requests.some((request) => request.id === ctx.requestOther.id));
+  });
+
+  it('only providers can accept', async () => {
+    assert.equal((await post(`/api/requests/${ctx.requestA.id}/accept`)).status, 401);
+    assert.equal(
+      (await post(`/api/requests/${ctx.requestA.id}/accept`, { token: ctx.customerA.token })).status,
+      403,
     );
-
-    await patch('/api/users/me', { token: ctx.provider2.token, body: { serviceCategories: [] } });
+    assert.equal(
+      (await post(`/api/requests/${ctx.requestA.id}/accept`, { token: ctx.admin.token })).status,
+      403,
+    );
+    assert.equal(
+      (await post('/api/requests/64b000000000000000000000/accept', { token: ctx.provider1.token })).status,
+      404,
+    );
   });
 
-  it('lets providers quote and keeps competitor quotes private', async () => {
-    const quote1 = await post(`/api/requests/${ctx.requestA.id}/quotes`, {
+  it('a provider accepts a request and the job is created and assigned to them', async () => {
+    const accepted = await post(`/api/requests/${ctx.requestA.id}/accept`, {
       token: ctx.provider1.token,
-      body: { amount: 1500, description: 'Full service with gas top-up' },
     });
-    assert.equal(quote1.status, 201);
-    ctx.quote1 = quote1.body.quote;
 
-    const quote2 = await post(`/api/requests/${ctx.requestA.id}/quotes`, {
-      token: ctx.provider2.token,
-      body: { amount: 1300, description: 'Service only' },
-    });
-    assert.equal(quote2.status, 201);
-    ctx.quote2 = quote2.body.quote;
-
-    const provider2View = await get(`/api/requests/${ctx.requestA.id}/quotes`, {
-      token: ctx.provider2.token,
-    });
-    assert.equal(provider2View.body.quotes.length, 1);
-    assert.equal(provider2View.body.quotes[0].id, ctx.quote2.id);
-
-    const customerView = await get(`/api/requests/${ctx.requestA.id}/quotes`, {
-      token: ctx.customerA.token,
-    });
-    assert.equal(customerView.body.quotes.length, 2);
-
-    const discovery = await get(`/api/requests/${ctx.requestA.id}/providers`, {
-      token: ctx.customerA.token,
-    });
-    const withQuote = discovery.body.providers.find((p) => p.id === ctx.provider1.user.id);
-    assert.equal(withQuote.quote.amount, 1500);
-  });
-
-  it('accepting a quote selects the provider exactly once', async () => {
-    const accepted = await post(`/api/quotes/${ctx.quote1.id}/accept`, {
-      token: ctx.customerA.token,
-    });
     assert.equal(accepted.status, 200);
-    assert.equal(accepted.body.request.status, 'QUOTE_ACCEPTED');
+    assert.equal(accepted.body.request.status, 'ACCEPTED');
     assert.equal(accepted.body.request.selectedProviderId, ctx.provider1.user.id);
-    assert.equal(accepted.body.request.acceptedQuoteId, ctx.quote1.id);
-    assert.equal(accepted.body.request.booking, null);
+    assert.ok(accepted.body.request.acceptedAt);
+    assert.equal(accepted.body.request.customer.name, 'Asha C');
+    assert.equal(accepted.body.request.address.addressLine, '12 Lake View Road');
+    assert.equal(accepted.body.booking.status, 'ASSIGNED');
+    assert.equal(accepted.body.booking.requestId, ctx.requestA.id);
+    assert.equal(accepted.body.booking.customer.name, 'Asha C');
+    assert.equal(accepted.body.request.bookingId, accepted.body.booking.id);
+    assert.equal('arrivalCode' in accepted.body.booking, false);
+    assert.equal('amount' in accepted.body.booking, false);
+    assert.equal('quoteId' in accepted.body.booking, false);
+    assert.ok(accepted.body.booking.timeline.technicianAssignedAt);
+    ctx.bookingA = accepted.body.booking;
 
-    const twice = await post(`/api/quotes/${ctx.quote1.id}/accept`, { token: ctx.customerA.token });
-    assert.equal(twice.status, 409);
+    const jobs = await get('/api/provider/jobs', { token: ctx.provider1.token });
+    assert.ok(jobs.body.jobs.some((job) => job.id === ctx.requestA.id && job.bookingId === ctx.bookingA.id));
 
-    const loser = await post(`/api/quotes/${ctx.quote2.id}/accept`, { token: ctx.customerA.token });
-    assert.equal(loser.status, 409);
+    // The request has left the open marketplace.
+    const feed = await get('/api/provider/requests', { token: ctx.provider2.token });
+    assert.ok(!feed.body.requests.some((request) => request.id === ctx.requestA.id));
   });
 
-  it('only one of two concurrent quote acceptances wins', async () => {
+  it('the customer sees the assigned provider and the job', async () => {
+    const detail = await get(`/api/requests/${ctx.requestA.id}`, { token: ctx.customerA.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.request.status, 'ACCEPTED');
+    assert.equal(detail.body.request.selectedProvider.id, ctx.provider1.user.id);
+    assert.equal(detail.body.request.selectedProvider.name, 'Prakash Tech');
+    assert.equal(detail.body.request.booking.id, ctx.bookingA.id);
+    assert.equal('acceptedQuote' in detail.body.request, false);
+    assert.equal('quotesCount' in detail.body.request, false);
+
+    const booking = await get(`/api/bookings/${ctx.bookingA.id}`, { token: ctx.customerA.token });
+    assert.equal(booking.status, 200);
+    assert.equal(booking.body.booking.provider.id, ctx.provider1.user.id);
+    assert.match(booking.body.booking.arrivalCode, /^\d{4}$/);
+    ctx.bookingA.arrivalCode = booking.body.booking.arrivalCode;
+  });
+
+  it('a second provider gets 409 and the assignment does not change', async () => {
+    const late = await post(`/api/requests/${ctx.requestA.id}/accept`, { token: ctx.provider2.token });
+    assert.equal(late.status, 409);
+    assert.equal(late.body.error.code, 'REQUEST_ALREADY_ACCEPTED');
+    assert.equal(late.body.error.message, 'This job has already been accepted.');
+
+    // Unassigned providers can no longer open the request at all.
+    const view = await get(`/api/provider/requests/${ctx.requestA.id}`, { token: ctx.provider2.token });
+    assert.equal(view.status, 403);
+
+    const detail = await get(`/api/requests/${ctx.requestA.id}`, { token: ctx.customerA.token });
+    assert.equal(detail.body.request.selectedProviderId, ctx.provider1.user.id);
+  });
+
+  it('repeating the acceptance returns the same job without duplicates', async () => {
+    const results = await Promise.all(
+      [1, 2, 3].map(() => post(`/api/requests/${ctx.requestA.id}/accept`, { token: ctx.provider1.token })),
+    );
+    assert.deepEqual(results.map((result) => result.status), [200, 200, 200]);
+    assert.ok(results.every((result) => result.body.booking.id === ctx.bookingA.id));
+
+    const { default: Booking } = await import('../src/models/Booking.js');
+    assert.equal(await Booking.countDocuments({ requestId: ctx.requestA.id }), 1);
+  });
+
+  it('exactly one of two simultaneous acceptances wins; one booking exists', async () => {
     const created = await post('/api/requests', {
       token: ctx.customerB.token,
       body: requestPayload(ctx.acRepair.id, { issueKey: 'MAKING_NOISE' }),
     });
     const requestId = created.body.request.id;
-    const [q1, q2] = await Promise.all([
-      post(`/api/requests/${requestId}/quotes`, {
-        token: ctx.provider1.token,
-        body: { amount: 900, description: 'Fix noise' },
-      }),
-      post(`/api/requests/${requestId}/quotes`, {
-        token: ctx.provider2.token,
-        body: { amount: 950, description: 'Fix noise too' },
-      }),
-    ]);
 
     const results = await Promise.all([
-      post(`/api/quotes/${q1.body.quote.id}/accept`, { token: ctx.customerB.token }),
-      post(`/api/quotes/${q2.body.quote.id}/accept`, { token: ctx.customerB.token }),
+      post(`/api/requests/${requestId}/accept`, { token: ctx.provider1.token }),
+      post(`/api/requests/${requestId}/accept`, { token: ctx.provider2.token }),
     ]);
-    const statuses = results.map((result) => result.status).sort();
-    assert.deepEqual(statuses, [200, 409]);
+    assert.deepEqual(results.map((result) => result.status).sort(), [200, 409]);
+
+    const winner = results.find((result) => result.status === 200);
+    const loser = results.find((result) => result.status === 409);
+    assert.equal(loser.body.error.code, 'REQUEST_ALREADY_ACCEPTED');
+
+    const detail = await get(`/api/requests/${requestId}`, { token: ctx.customerB.token });
+    assert.equal(detail.body.request.selectedProviderId, winner.body.request.selectedProviderId);
+
+    const { default: Booking } = await import('../src/models/Booking.js');
+    const bookings = await Booking.find({ requestId });
+    assert.equal(bookings.length, 1);
+    assert.equal(String(bookings[0].providerId), winner.body.request.selectedProviderId);
+
     ctx.requestB = requestId;
+    ctx.bookingB = winner.body.booking;
+    ctx.bookingBProvider = [ctx.provider1, ctx.provider2].find(
+      (provider) => provider.user.id === winner.body.request.selectedProviderId,
+    );
   });
-});
 
-describe('booking confirmation', () => {
-  it('rejects confirmation before a quote is accepted', async () => {
-    const result = await post(`/api/requests/${ctx.requestLegacy.id}/confirm`, {
+  it('cancelled requests cannot be accepted, and accepted ones cannot be cancelled', async () => {
+    const cancelled = await post(`/api/requests/${ctx.requestOther.id}/accept`, {
+      token: ctx.provider1.token,
+    });
+    assert.equal(cancelled.status, 409);
+    assert.equal(cancelled.body.error.code, 'REQUEST_NOT_OPEN');
+
+    const cancelAccepted = await post(`/api/requests/${ctx.requestA.id}/cancel`, {
       token: ctx.customerA.token,
     });
-    assert.equal(result.status, 409);
+    assert.equal(cancelAccepted.status, 409);
   });
 
-  it('creates the booking with honest safety data', async () => {
-    const result = await post(`/api/requests/${ctx.requestA.id}/confirm`, {
-      token: ctx.customerA.token,
-    });
+  it('quotes and payments are not part of the flow at all', async () => {
+    const { default: mongoose } = await import('mongoose');
+    assert.equal(mongoose.modelNames().includes('Quote'), false);
+    assert.equal(mongoose.modelNames().includes('Payment'), false);
 
-    assert.equal(result.status, 200);
-    assert.equal(result.body.booking.status, 'CONFIRMED');
-    assert.equal(result.body.booking.requestId, ctx.requestA.id);
-    assert.equal(result.body.booking.amount, 1500);
-    assert.equal(result.body.provider.id, ctx.provider1.user.id);
-    assert.equal(result.body.request.booking.id, result.body.booking.id);
-    assert.deepEqual(result.body.safety, {
-      providerVerified: false,
-      insuranceIncluded: false,
-      arrivalCode: result.body.booking.arrivalCode,
-    });
-    assert.match(result.body.safety.arrivalCode, /^\d{4}$/);
-    ctx.bookingA = result.body.booking;
-  });
+    const removed = [
+      ['POST', `/api/requests/${ctx.requestA.id}/quotes`, ctx.provider1.token],
+      ['GET', `/api/requests/${ctx.requestA.id}/quotes`, ctx.customerA.token],
+      ['GET', `/api/requests/${ctx.requestA.id}/providers`, ctx.customerA.token],
+      ['POST', `/api/requests/${ctx.requestA.id}/confirm`, ctx.customerA.token],
+      ['POST', '/api/quotes/64b000000000000000000000/accept', ctx.customerA.token],
+      ['POST', `/api/bookings/${ctx.bookingA.id}/assign`, ctx.provider1.token],
+      ['GET', `/api/bookings/${ctx.bookingA.id}/payment`, ctx.customerA.token],
+      ['POST', `/api/bookings/${ctx.bookingA.id}/payment/mark-paid`, ctx.provider1.token],
+      ['GET', '/api/admin/quotes', ctx.admin.token],
+      ['GET', '/api/admin/payments', ctx.admin.token],
+    ];
 
-  it('is idempotent, including under concurrent duplicate calls', async () => {
-    const again = await post(`/api/requests/${ctx.requestA.id}/confirm`, {
-      token: ctx.customerA.token,
-    });
-    assert.equal(again.status, 200);
-    assert.equal(again.body.booking.id, ctx.bookingA.id);
-
-    const results = await Promise.all(
-      [1, 2, 3].map(() =>
-        post(`/api/requests/${ctx.requestB}/confirm`, { token: ctx.customerB.token }),
-      ),
-    );
-    const ids = new Set(results.map((result) => result.body.booking?.id));
-    assert.deepEqual(results.map((result) => result.status), [200, 200, 200]);
-    assert.equal(ids.size, 1);
-    ctx.bookingB = results[0].body.booking;
-  });
-
-  it('never confirms another customer\'s request', async () => {
-    assert.equal(
-      (await post(`/api/requests/${ctx.requestA.id}/confirm`, { token: ctx.customerB.token })).status,
-      403,
-    );
-    assert.equal(
-      (await post(`/api/requests/${ctx.requestA.id}/confirm`, { token: ctx.provider1.token })).status,
-      403,
-    );
-    assert.equal((await post(`/api/requests/${ctx.requestA.id}/confirm`)).status, 401);
+    for (const [method, path, token] of removed) {
+      assert.equal((await api(method, path, { token })).status, 404, `${method} ${path}`);
+    }
   });
 });
 
@@ -509,7 +581,7 @@ describe('bookings', () => {
     assert.ok(providerView.body.bookings.every((booking) => booking.customer));
 
     const other = await get('/api/bookings', { token: ctx.provider2.token });
-    assert.equal(other.body.bookings.length, 0);
+    assert.ok(!other.body.bookings.some((booking) => booking.id === ctx.bookingA.id));
 
     // Admin is allowed onto this endpoint (for the Customer View area preview) but
     // the filter falls back to { customerId: admin.id }, so it never sees this or
@@ -524,7 +596,7 @@ describe('bookings', () => {
     assert.equal(upcoming.body.bookings.length, 1);
     const completed = await get('/api/bookings?status=COMPLETED', { token: ctx.customerA.token });
     assert.equal(completed.body.bookings.length, 0);
-    const exact = await get('/api/bookings?status=confirmed', { token: ctx.customerA.token });
+    const exact = await get('/api/bookings?status=assigned', { token: ctx.customerA.token });
     assert.equal(exact.body.bookings.length, 1);
     const invalid = await get('/api/bookings?status=WHATEVER', { token: ctx.customerA.token });
     assert.equal(invalid.status, 400);
@@ -551,14 +623,14 @@ describe('bookings', () => {
     );
   });
 
-  it('shows the job in the selected provider\'s jobs list only', async () => {
+  it('shows the job in the assigned provider\'s jobs list only', async () => {
     const jobs = await get('/api/provider/jobs', { token: ctx.provider1.token });
     assert.equal(jobs.status, 200);
     const job = jobs.body.jobs.find((item) => item.id === ctx.requestA.id);
     assert.ok(job);
     assert.equal(job.bookingId, ctx.bookingA.id);
-    assert.equal(job.bookingStatus, 'CONFIRMED');
-    assert.equal(job.amount, 1500);
+    assert.equal(job.bookingStatus, 'ASSIGNED');
+    assert.equal('amount' in job, false);
     assert.equal(job.issueLabel, 'Not cooling');
     assert.equal(job.address.city, 'Bengaluru');
 
@@ -568,7 +640,7 @@ describe('bookings', () => {
     assert.equal(filtered.body.jobs.length, 0);
 
     const none = await get('/api/provider/jobs', { token: ctx.provider2.token });
-    assert.equal(none.body.jobs.length, 0);
+    assert.ok(!none.body.jobs.some((item) => item.id === ctx.requestA.id));
 
     assert.equal((await get('/api/provider/jobs', { token: ctx.customerA.token })).status, 403);
   });
@@ -622,7 +694,7 @@ describe('tracking', () => {
   it('customer reads tracking without invented ETA or distance', async () => {
     const result = await get(path('/tracking'), { token: ctx.customerA.token });
     assert.equal(result.status, 200);
-    assert.equal(result.body.tracking.status, 'CONFIRMED');
+    assert.equal(result.body.tracking.status, 'ASSIGNED');
     assert.equal(result.body.tracking.eta, null);
     assert.equal(result.body.tracking.distance, null);
     assert.equal(result.body.tracking.lastLocation.longitude, 77.59);
@@ -632,18 +704,12 @@ describe('tracking', () => {
   });
 
   it('walks assigned → on the way → arrived once each', async () => {
-    const assigned = await post(path('/assign'), { token: ctx.provider1.token });
-    assert.equal(assigned.status, 200);
-    assert.equal(assigned.body.booking.status, 'ASSIGNED');
-    assert.ok(assigned.body.booking.timeline.technicianAssignedAt);
-
     const onTheWay = await post(path('/on-the-way'), { token: ctx.provider1.token });
     assert.equal(onTheWay.body.booking.status, 'ON_THE_WAY');
     assert.equal((await post(path('/on-the-way'), { token: ctx.provider1.token })).status, 409);
 
     const arrived = await post(path('/arrived'), { token: ctx.provider1.token });
     assert.equal(arrived.body.booking.status, 'ARRIVED');
-    assert.equal((await post(path('/assign'), { token: ctx.provider1.token })).status, 409);
 
     const jobs = await get('/api/provider/jobs?bookingStatus=ARRIVED', { token: ctx.provider1.token });
     assert.equal(jobs.body.jobs.length, 1);
@@ -916,15 +982,13 @@ describe('external jobs', () => {
     );
   });
 
-  it('does not create a ServiceRequest, Quote or Payment', async () => {
+  it('does not create a ServiceRequest or Booking', async () => {
     const { default: ServiceRequest } = await import('../src/models/ServiceRequest.js');
-    const { default: Quote } = await import('../src/models/Quote.js');
-    const { default: Payment } = await import('../src/models/Payment.js');
+    const { default: Booking } = await import('../src/models/Booking.js');
 
-    const [beforeRequests, beforeQuotes, beforePayments] = await Promise.all([
+    const [beforeRequests, beforeBookings] = await Promise.all([
       ServiceRequest.countDocuments(),
-      Quote.countDocuments(),
-      Payment.countDocuments(),
+      Booking.countDocuments(),
     ]);
 
     const created = await post(path(), { token: ctx.provider1.token, body: payload() });
@@ -934,15 +998,13 @@ describe('external jobs', () => {
     assert.equal(created.body.job.customer.name, 'Walk-in Customer');
     ctx.externalJobId = created.body.job.id;
 
-    const [afterRequests, afterQuotes, afterPayments] = await Promise.all([
+    const [afterRequests, afterBookings] = await Promise.all([
       ServiceRequest.countDocuments(),
-      Quote.countDocuments(),
-      Payment.countDocuments(),
+      Booking.countDocuments(),
     ]);
 
     assert.equal(afterRequests, beforeRequests);
-    assert.equal(afterQuotes, beforeQuotes);
-    assert.equal(afterPayments, beforePayments);
+    assert.equal(afterBookings, beforeBookings);
   });
 
   it('provider sees their own external job in My Jobs, alongside 4Fix jobs', async () => {
@@ -1037,85 +1099,32 @@ describe('external jobs', () => {
   });
 });
 
-describe('payment', () => {
+describe('completion', () => {
   const path = (suffix) => `/api/bookings/${ctx.bookingA.id}${suffix}`;
 
-  it('is not available before completion', async () => {
-    const result = await get(path('/payment'), { token: ctx.customerA.token });
-    assert.equal(result.status, 404);
-    assert.equal(result.body.error.code, 'PAYMENT_NOT_DUE');
-
-    const early = await post(path('/payment/mark-paid'), {
-      token: ctx.provider1.token,
-      body: { method: 'CASH' },
-    });
-    assert.equal(early.status, 409);
-  });
-
-  it('opens a pending payment for the accepted quote amount on completion', async () => {
+  it('completes the job without any payment step', async () => {
     const completed = await post(`/api/requests/${ctx.requestA.id}/complete`, {
       token: ctx.provider1.token,
     });
     assert.equal(completed.status, 200);
     assert.equal(completed.body.request.status, 'COMPLETED');
+    // The assigned provider still has the job's location on every lifecycle response.
+    assert.equal(completed.body.request.address.addressLine, '12 Lake View Road');
 
     const booking = await get(path(''), { token: ctx.customerA.token });
     assert.equal(booking.body.booking.status, 'COMPLETED');
     assert.ok(booking.body.booking.timeline.completedAt);
-
-    const payment = await get(path('/payment'), { token: ctx.customerA.token });
-    assert.equal(payment.status, 200);
-    assert.equal(payment.body.payment.status, 'PENDING');
-    assert.equal(payment.body.payment.amount, 1500);
-    assert.equal(payment.body.payment.currency, 'INR');
-    assert.equal(payment.body.payment.paidAt, null);
-
-    assert.equal((await get(path('/payment'), { token: ctx.customerB.token })).status, 403);
-    assert.equal((await get(path('/payment'), { token: ctx.admin.token })).status, 200);
-  });
-
-  it('never reports a payment as made without an explicit record', async () => {
-    const customerClaim = await post(path('/payment/mark-paid'), {
-      token: ctx.customerA.token,
-      body: { method: 'CASH' },
-    });
-    assert.equal(customerClaim.status, 403);
-
-    const otherProvider = await post(path('/payment/mark-paid'), {
-      token: ctx.provider2.token,
-      body: { method: 'CASH' },
-    });
-    assert.equal(otherProvider.status, 403);
-
-    const noMethod = await post(path('/payment/mark-paid'), { token: ctx.provider1.token, body: {} });
-    assert.equal(noMethod.status, 400);
-
-    const still = await get(path('/payment'), { token: ctx.customerA.token });
-    assert.equal(still.body.payment.status, 'PENDING');
-  });
-
-  it('lets the provider record a received payment once', async () => {
-    const paid = await post(path('/payment/mark-paid'), {
-      token: ctx.provider1.token,
-      body: { method: 'upi', transactionReference: 'UPI-12345', amount: 1 },
-    });
-    assert.equal(paid.status, 200);
-    assert.equal(paid.body.payment.status, 'PAID');
-    assert.equal(paid.body.payment.method, 'UPI');
-    assert.equal(paid.body.payment.amount, 1500);
-    assert.ok(paid.body.payment.paidAt);
-
-    const twice = await post(path('/payment/mark-paid'), {
-      token: ctx.provider1.token,
-      body: { method: 'CASH' },
-    });
-    assert.equal(twice.status, 409);
 
     const closed = await patch(path('/location'), {
       token: ctx.provider1.token,
       body: { latitude: 1, longitude: 1 },
     });
     assert.equal(closed.status, 409);
+
+    const { default: mongoose } = await import('mongoose');
+    const collections = (await mongoose.connection.db.listCollections().toArray()).map((c) => c.name);
+    assert.equal(collections.includes('payments'), false);
+    assert.equal(collections.includes('quotes'), false);
   });
 });
 
@@ -1210,17 +1219,20 @@ describe('lifecycle safety', () => {
     );
   });
 
-  it('keeps the plain V1 flow (no confirm) working', async () => {
+  it('runs the whole V1 flow with no quote, confirmation or payment', async () => {
     const created = await post('/api/requests', {
       token: ctx.customerA.token,
       body: requestPayload(ctx.plumbing.id),
     });
     const requestId = created.body.request.id;
-    const quote = await post(`/api/requests/${requestId}/quotes`, {
-      token: ctx.provider2.token,
-      body: { amount: 400, description: 'Tap washer' },
-    });
-    assert.equal((await post(`/api/quotes/${quote.body.quote.id}/accept`, { token: ctx.customerA.token })).status, 200);
+
+    const accepted = await post(`/api/requests/${requestId}/accept`, { token: ctx.provider2.token });
+    assert.equal(accepted.status, 200);
+    const bookingId = accepted.body.booking.id;
+
+    // Start before scheduling is not allowed: ACCEPTED → SCHEDULED comes first.
+    assert.equal((await post(`/api/requests/${requestId}/start`, { token: ctx.provider2.token })).status, 409);
+
     assert.equal(
       (await post(`/api/requests/${requestId}/schedule`, {
         token: ctx.provider2.token,
@@ -1228,14 +1240,23 @@ describe('lifecycle safety', () => {
       })).status,
       200,
     );
+    assert.equal((await post(`/api/bookings/${bookingId}/on-the-way`, { token: ctx.provider2.token })).status, 200);
+    assert.equal((await post(`/api/bookings/${bookingId}/arrived`, { token: ctx.provider2.token })).status, 200);
     assert.equal((await post(`/api/requests/${requestId}/start`, { token: ctx.provider2.token })).status, 200);
     const done = await post(`/api/requests/${requestId}/complete`, { token: ctx.provider2.token });
     assert.equal(done.status, 200);
     assert.equal(done.body.request.status, 'COMPLETED');
 
     const detail = await get(`/api/requests/${requestId}`, { token: ctx.customerA.token });
-    assert.equal(detail.body.request.booking, null);
-    assert.equal(detail.body.request.quotesCount, 1);
+    assert.equal(detail.body.request.booking.id, bookingId);
+    assert.equal(detail.body.request.booking.status, 'COMPLETED');
+
+    const review = await post(`/api/bookings/${bookingId}/review`, {
+      token: ctx.customerA.token,
+      body: { rating: 5 },
+    });
+    assert.equal(review.status, 201);
+    assert.equal(review.body.review.providerId, ctx.provider2.user.id);
   });
 
   it('only one of two concurrent lifecycle transitions succeeds', async () => {
@@ -1256,22 +1277,16 @@ describe('security', () => {
       ['POST', '/api/requests'],
       ['GET', `/api/requests/${id}`],
       ['POST', `/api/requests/${id}/cancel`],
-      ['GET', `/api/requests/${id}/providers`],
-      ['POST', `/api/requests/${id}/confirm`],
-      ['GET', `/api/requests/${id}/quotes`],
-      ['POST', `/api/requests/${id}/quotes`],
+      ['POST', `/api/requests/${id}/accept`],
       ['POST', `/api/requests/${id}/schedule`],
       ['POST', `/api/requests/${id}/start`],
       ['POST', `/api/requests/${id}/complete`],
-      ['POST', `/api/quotes/${id}/accept`],
-      ['POST', `/api/quotes/${id}/reject`],
       ['GET', '/api/provider/requests'],
       ['GET', `/api/provider/requests/${id}`],
       ['GET', '/api/provider/jobs'],
       ['GET', '/api/bookings'],
       ['GET', `/api/bookings/${id}`],
       ['GET', `/api/bookings/${id}/tracking`],
-      ['POST', `/api/bookings/${id}/assign`],
       ['POST', `/api/bookings/${id}/on-the-way`],
       ['POST', `/api/bookings/${id}/arrived`],
       ['PATCH', `/api/bookings/${id}/location`],
@@ -1280,8 +1295,6 @@ describe('security', () => {
       ['GET', `/api/bookings/${id}/messages`],
       ['POST', `/api/bookings/${id}/messages`],
       ['POST', `/api/bookings/${id}/messages/read`],
-      ['GET', `/api/bookings/${id}/payment`],
-      ['POST', `/api/bookings/${id}/payment/mark-paid`],
       ['POST', `/api/bookings/${id}/review`],
       ['GET', `/api/bookings/${id}/review`],
       ['PATCH', '/api/users/me'],
@@ -1420,13 +1433,8 @@ describe('admin', () => {
       ['GET', `/api/admin/customers/${id}`],
       ['GET', '/api/admin/requests'],
       ['GET', `/api/admin/requests/${id}`],
-      ['GET', '/api/admin/quotes'],
-      ['GET', `/api/admin/quotes/${id}`],
-      ['POST', `/api/admin/quotes/${id}/assign`],
       ['GET', '/api/admin/bookings'],
       ['GET', `/api/admin/bookings/${id}`],
-      ['GET', '/api/admin/payments'],
-      ['GET', `/api/admin/payments/${id}`],
       ['GET', '/api/admin/reviews'],
       ['GET', `/api/admin/reviews/${id}`],
     ];
@@ -1454,13 +1462,13 @@ describe('admin', () => {
     assert.equal(typeof result.body.counts.totalProviders, 'number');
     assert.equal(typeof result.body.counts.activeProviders, 'number');
     assert.equal(typeof result.body.counts.openRequests, 'number');
-    assert.equal(typeof result.body.counts.openQuotes, 'number');
+    assert.equal(typeof result.body.counts.acceptedRequests, 'number');
     assert.equal(typeof result.body.counts.activeBookings, 'number');
     assert.equal(typeof result.body.counts.completedBookings, 'number');
-    assert.equal(typeof result.body.counts.pendingPayments, 'number');
-    assert.equal(typeof result.body.counts.completedPayments, 'number');
+    assert.equal('openQuotes' in result.body.counts, false);
+    assert.equal('pendingPayments' in result.body.counts, false);
     assert.ok(Array.isArray(result.body.recent.requests));
-    assert.ok(Array.isArray(result.body.recent.quotes));
+    assert.equal('quotes' in result.body.recent, false);
     assert.ok(Array.isArray(result.body.recent.bookings));
   });
 
@@ -1577,7 +1585,6 @@ describe('admin', () => {
     assert.equal(detail.status, 200);
     assert.equal(detail.body.provider.id, ctx.provider1.user.id);
     assert.equal('passwordHash' in detail.body.provider, false);
-    assert.ok(Array.isArray(detail.body.quotes));
     assert.ok(Array.isArray(detail.body.bookings));
     assert.ok(Array.isArray(detail.body.reviews));
 
@@ -1634,7 +1641,6 @@ describe('admin', () => {
     assert.equal('passwordHash' in detail.body.customer, false);
     assert.ok(Array.isArray(detail.body.requests));
     assert.ok(Array.isArray(detail.body.bookings));
-    assert.ok(Array.isArray(detail.body.payments));
     assert.ok(Array.isArray(detail.body.reviews));
 
     assert.equal(
@@ -1662,11 +1668,11 @@ describe('admin', () => {
     assert.equal(detail.status, 200);
     assert.equal(detail.body.request.customer.id, ctx.customerA.user.id);
     assert.equal(detail.body.request.status, 'COMPLETED');
-    assert.equal(detail.body.quotes.length, 2);
+    assert.equal(detail.body.request.selectedProvider.id, ctx.provider1.user.id);
+    assert.equal('quotes' in detail.body, false);
+    assert.equal('payment' in detail.body, false);
     assert.ok(detail.body.booking);
     assert.equal(detail.body.booking.id, ctx.bookingA.id);
-    assert.ok(detail.body.payment);
-    assert.equal(detail.body.payment.status, 'PAID');
     assert.ok(detail.body.review);
     assert.equal(detail.body.review.rating, 4);
 
@@ -1674,90 +1680,6 @@ describe('admin', () => {
       (await get('/api/admin/requests/64b000000000000000000000', { token: ctx.admin.token })).status,
       404,
     );
-  });
-
-  it('admin can list and view quotes, and assign an existing quote atomically', async () => {
-    const customer = await signup('CUSTOMER', 'Quote Assign Customer', '9876521001');
-    const created = await post('/api/requests', {
-      token: customer.token,
-      body: requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING' }),
-    });
-    const requestId = created.body.request.id;
-
-    const quoteX = await post(`/api/requests/${requestId}/quotes`, {
-      token: ctx.provider1.token,
-      body: { amount: 1100, description: 'Quote X' },
-    });
-    const quoteY = await post(`/api/requests/${requestId}/quotes`, {
-      token: ctx.provider2.token,
-      body: { amount: 1250, description: 'Quote Y' },
-    });
-
-    const listed = await get(`/api/admin/quotes?request=${requestId}`, { token: ctx.admin.token });
-    assert.equal(listed.status, 200);
-    assert.equal(listed.body.quotes.length, 2);
-    assert.ok(listed.body.quotes.every((quote) => quote.request.id === requestId));
-    assert.ok(listed.body.quotes.every((quote) => quote.isSelected === false));
-
-    const filteredByProvider = await get(`/api/admin/quotes?provider=${ctx.provider1.user.id}`, {
-      token: ctx.admin.token,
-    });
-    assert.ok(filteredByProvider.body.quotes.some((quote) => quote.id === quoteX.body.quote.id));
-
-    const detail = await get(`/api/admin/quotes/${quoteX.body.quote.id}`, { token: ctx.admin.token });
-    assert.equal(detail.status, 200);
-    assert.equal(detail.body.quote.provider.id, ctx.provider1.user.id);
-    assert.equal(detail.body.quote.request.customer.id, customer.user.id);
-    assert.equal(detail.body.booking, null);
-
-    // Only an admin may call the assignment endpoint.
-    assert.equal(
-      (await post(`/api/admin/quotes/${quoteX.body.quote.id}/assign`, { token: customer.token })).status,
-      403,
-    );
-    assert.equal(
-      (await post(`/api/admin/quotes/${quoteX.body.quote.id}/assign`, { token: ctx.provider1.token }))
-        .status,
-      403,
-    );
-
-    // Two admins racing to assign different quotes on the same request: exactly one wins.
-    const [resultX, resultY] = await Promise.all([
-      post(`/api/admin/quotes/${quoteX.body.quote.id}/assign`, { token: ctx.admin.token }),
-      post(`/api/admin/quotes/${quoteY.body.quote.id}/assign`, { token: ctx.admin.token }),
-    ]);
-    assert.deepEqual([resultX.status, resultY.status].sort(), [200, 409]);
-
-    const winner = resultX.status === 200 ? resultX : resultY;
-    assert.equal(winner.body.request.status, 'QUOTE_ACCEPTED');
-    assert.equal(winner.body.quote.status, 'ACCEPTED');
-    assert.equal(winner.body.request.selectedProviderId, winner.body.quote.providerId);
-    // No booking exists yet — only the customer's own confirmation step creates one.
-    assert.equal(winner.body.request.booking, null);
-
-    // The quote that just lost the race (or already won) can never be assigned again.
-    assert.equal(
-      (await post(`/api/admin/quotes/${quoteX.body.quote.id}/assign`, { token: ctx.admin.token })).status,
-      409,
-    );
-    assert.equal(
-      (await post(`/api/admin/quotes/${quoteY.body.quote.id}/assign`, { token: ctx.admin.token })).status,
-      409,
-    );
-
-    assert.equal(
-      (await post('/api/admin/quotes/64b000000000000000000000/assign', { token: ctx.admin.token }))
-        .status,
-      404,
-    );
-  });
-
-  it('rejects assigning a quote that is not pending', async () => {
-    // ctx.quote2 lost to ctx.quote1 earlier in the suite and is now REJECTED.
-    const result = await post(`/api/admin/quotes/${ctx.quote2.id}/assign`, { token: ctx.admin.token });
-
-    assert.equal(result.status, 409);
-    assert.equal(result.body.error.code, 'QUOTE_NOT_PENDING');
   });
 
   it('admin can list and filter bookings, and view booking detail', async () => {
@@ -1782,27 +1704,6 @@ describe('admin', () => {
 
     assert.equal(
       (await get('/api/admin/bookings/64b000000000000000000000', { token: ctx.admin.token })).status,
-      404,
-    );
-  });
-
-  it('admin can list and filter payments, and view payment detail', async () => {
-    const listed = await get('/api/admin/payments', { token: ctx.admin.token });
-    assert.equal(listed.status, 200);
-    const paid = listed.body.payments.find((payment) => payment.bookingId === ctx.bookingA.id);
-    assert.ok(paid);
-    assert.equal(paid.status, 'PAID');
-
-    const filtered = await get('/api/admin/payments?status=PAID', { token: ctx.admin.token });
-    assert.equal(filtered.status, 200);
-    assert.ok(filtered.body.payments.every((payment) => payment.status === 'PAID'));
-
-    const detail = await get(`/api/admin/payments/${paid.id}`, { token: ctx.admin.token });
-    assert.equal(detail.status, 200);
-    assert.equal(detail.body.payment.id, paid.id);
-
-    assert.equal(
-      (await get('/api/admin/payments/64b000000000000000000000', { token: ctx.admin.token })).status,
       404,
     );
   });
@@ -2037,14 +1938,11 @@ describe('voice notes', () => {
     assert.equal(adminRequestView.status, 200);
     assert.deepEqual(adminRequestView.body.request.voiceNote, voiceNote);
 
-    const quoted = await post(`/api/requests/${requestId}/quotes`, {
-      token: provider.token,
-      body: { amount: 999, description: 'Fix it' },
-    });
-    await post(`/api/quotes/${quoted.body.quote.id}/accept`, { token: customer.token });
-    const confirmed = await post(`/api/requests/${requestId}/confirm`, { token: customer.token });
+    const accepted = await post(`/api/requests/${requestId}/accept`, { token: provider.token });
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(accepted.body.booking.request.voiceNote, voiceNote);
 
-    const adminBookingView = await get(`/api/admin/bookings/${confirmed.body.booking.id}`, {
+    const adminBookingView = await get(`/api/admin/bookings/${accepted.body.booking.id}`, {
       token: ctx.admin.token,
     });
     assert.equal(adminBookingView.status, 200);
@@ -2114,7 +2012,7 @@ describe('admin area preview (Customer View / Provider View)', () => {
     const provider = await signup('PROVIDER', 'Preview Provider', '9876524011');
     const flow = await runFullFlow({ customer, provider, complete: false });
 
-    // Still open at creation, before any quote exists.
+    // Still open at creation, before any provider accepts it.
     const created = await post('/api/requests', {
       token: customer.token,
       body: requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING' }),
@@ -2123,15 +2021,9 @@ describe('admin area preview (Customer View / Provider View)', () => {
       token: ctx.admin.token,
     });
     assert.equal(openRequestView.status, 200);
+    assert.equal(openRequestView.body.request.location, null);
 
-    // ProviderRequestDetailsPage fetches this alongside the request itself.
-    const openRequestQuotes = await get(`/api/requests/${created.body.request.id}/quotes`, {
-      token: ctx.admin.token,
-    });
-    assert.equal(openRequestQuotes.status, 200);
-    assert.deepEqual(openRequestQuotes.body.quotes, []);
-
-    // flow.requestId is already QUOTE_ACCEPTED (a real booking exists) — no longer
+    // flow.requestId is already ACCEPTED (a real booking exists) — no longer
     // in the open marketplace, so admin gets the same 403 an uninvolved provider would.
     const bookedRequestView = await get(`/api/provider/requests/${flow.requestId}`, {
       token: ctx.admin.token,
@@ -2147,14 +2039,10 @@ describe('admin area preview (Customer View / Provider View)', () => {
     const attempts = [
       ['POST', '/api/requests', { serviceId: ctx.acRepair.id }],
       ['POST', `/api/requests/${flow.requestId}/cancel`, {}],
-      ['POST', `/api/requests/${flow.requestId}/confirm`, {}],
-      ['POST', `/api/requests/${flow.requestId}/quotes`, { amount: 100, description: 'x' }],
+      ['POST', `/api/requests/${flow.requestId}/accept`, {}],
       ['POST', `/api/requests/${flow.requestId}/schedule`, {}],
       ['POST', `/api/requests/${flow.requestId}/start`, {}],
       ['POST', `/api/requests/${flow.requestId}/complete`, {}],
-      ['POST', `/api/quotes/${flow.quoteId}/accept`, {}],
-      ['POST', `/api/quotes/${flow.quoteId}/reject`, {}],
-      ['POST', `/api/bookings/${flow.bookingId}/assign`, {}],
       ['POST', `/api/bookings/${flow.bookingId}/on-the-way`, {}],
       ['POST', `/api/bookings/${flow.bookingId}/arrived`, {}],
       ['PATCH', `/api/bookings/${flow.bookingId}/location`, { latitude: 1, longitude: 1 }],
@@ -2167,5 +2055,221 @@ describe('admin area preview (Customer View / Provider View)', () => {
       const result = await api(method, path, { token: ctx.admin.token, body });
       assert.equal(result.status, 403, `${method} ${path} unexpectedly allowed for admin (got ${result.status})`);
     }
+  });
+});
+
+describe('customer service location', () => {
+  const LOCATION = { latitude: 12.9716, longitude: 77.5946, address: 'Flat 3B, near the temple' };
+  const NAV_URL = 'https://www.google.com/maps/dir/?api=1&destination=12.9716,77.5946';
+  const loc = {};
+
+  before(async () => {
+    loc.customer = await signup('CUSTOMER', 'Location Customer', '9876525001');
+    loc.otherCustomer = await signup('CUSTOMER', 'Other Location Customer', '9876525002');
+    loc.selected = await signup('PROVIDER', 'Selected Location Provider', '9876525011');
+    loc.other = await signup('PROVIDER', 'Other Location Provider', '9876525012');
+    loc.unrelated = await signup('PROVIDER', 'Unrelated Location Provider', '9876525013');
+  });
+
+  function locationPayload(overrides = {}) {
+    return requestPayload(ctx.acRepair.id, { address: undefined, location: LOCATION, ...overrides });
+  }
+
+  it('accepts valid coordinates without a typed address and persists them', async () => {
+    const created = await post('/api/requests', { token: loc.customer.token, body: locationPayload() });
+
+    assert.equal(created.status, 201);
+    assert.equal(created.body.request.address, null);
+    assert.deepEqual(created.body.request.location, { ...LOCATION, navigationUrl: NAV_URL });
+    loc.requestId = created.body.request.id;
+
+    const { default: ServiceRequest } = await import('../src/models/ServiceRequest.js');
+    const stored = await ServiceRequest.findById(loc.requestId);
+    assert.equal(stored.location.latitude, LOCATION.latitude);
+    assert.equal(stored.location.longitude, LOCATION.longitude);
+    assert.equal(stored.location.address, LOCATION.address);
+  });
+
+  it('accepts a location together with a typed address, and boundary coordinates', async () => {
+    const both = await post('/api/requests', {
+      token: loc.customer.token,
+      body: requestPayload(ctx.acRepair.id, { location: { latitude: -90, longitude: 180 } }),
+    });
+    assert.equal(both.status, 201);
+    assert.equal(both.body.request.address.pincode, '560001');
+    assert.equal(both.body.request.location.latitude, -90);
+    assert.equal(both.body.request.location.longitude, 180);
+    assert.equal(both.body.request.location.address, null);
+  });
+
+  it('rejects invalid latitude', async () => {
+    for (const latitude of [90.0001, -91, '12.97', null]) {
+      const result = await post('/api/requests', {
+        token: loc.customer.token,
+        body: locationPayload({ location: { latitude, longitude: 77.5 } }),
+      });
+      assert.equal(result.status, 400, `latitude ${latitude}`);
+      assert.equal(result.body.error.code, 'VALIDATION_ERROR');
+    }
+  });
+
+  it('rejects invalid longitude', async () => {
+    for (const longitude of [180.5, -181, '77.5', undefined]) {
+      const result = await post('/api/requests', {
+        token: loc.customer.token,
+        body: locationPayload({ location: { latitude: 12.9, longitude } }),
+      });
+      assert.equal(result.status, 400, `longitude ${longitude}`);
+      assert.equal(result.body.error.code, 'VALIDATION_ERROR');
+    }
+  });
+
+  it('rejects a malformed location and a request with neither location nor address', async () => {
+    const malformed = await post('/api/requests', {
+      token: loc.customer.token,
+      body: locationPayload({ location: [12.9, 77.5] }),
+    });
+    assert.equal(malformed.status, 400);
+
+    const neither = await post('/api/requests', {
+      token: loc.customer.token,
+      body: requestPayload(ctx.acRepair.id, { address: undefined }),
+    });
+    assert.equal(neither.status, 400);
+  });
+
+  it('the customer sees their own location; other customers cannot read the request', async () => {
+    const detail = await get(`/api/requests/${loc.requestId}`, { token: loc.customer.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.request.location.latitude, LOCATION.latitude);
+    assert.equal(detail.body.request.location.navigationUrl, NAV_URL);
+
+    const list = await get('/api/requests', { token: loc.customer.token });
+    assert.ok(list.body.requests.find((item) => item.id === loc.requestId).location);
+
+    const other = await get(`/api/requests/${loc.requestId}`, { token: loc.otherCustomer.token });
+    assert.equal(other.status, 403);
+  });
+
+  it('never exposes coordinates in provider discovery or before acceptance', async () => {
+    const discovery = await get('/api/provider/requests', { token: loc.unrelated.token });
+    assert.equal(discovery.status, 200);
+    const listed = discovery.body.requests.find((item) => item.id === loc.requestId);
+    assert.ok(listed);
+    assert.equal(listed.location, undefined);
+    assert.ok(!JSON.stringify(discovery.body).includes('12.9716'));
+    assert.ok(!JSON.stringify(discovery.body).includes('Flat 3B'));
+
+    // Open request: any provider may view it, but without coordinates.
+    const preview = await get(`/api/provider/requests/${loc.requestId}`, { token: loc.selected.token });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.request.location, null);
+  });
+
+  it('the assigned provider receives the location on acceptance; others never do', async () => {
+    const accepted = await post(`/api/requests/${loc.requestId}/accept`, { token: loc.selected.token });
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.body.request.location.latitude, LOCATION.latitude);
+    assert.equal(accepted.body.request.location.longitude, LOCATION.longitude);
+    assert.equal(accepted.body.request.location.navigationUrl, NAV_URL);
+    assert.equal(accepted.body.booking.request.location.navigationUrl, NAV_URL);
+    loc.bookingId = accepted.body.booking.id;
+
+    const late = await post(`/api/requests/${loc.requestId}/accept`, { token: loc.other.token });
+    assert.equal(late.status, 409);
+    assert.equal(late.body.request, undefined);
+    assert.ok(!JSON.stringify(late.body).includes('12.9716'));
+
+    const asSelected = await get(`/api/provider/requests/${loc.requestId}`, { token: loc.selected.token });
+    assert.equal(asSelected.status, 200);
+    assert.equal(asSelected.body.request.location.navigationUrl, NAV_URL);
+
+    for (const provider of [loc.other, loc.unrelated]) {
+      const denied = await get(`/api/provider/requests/${loc.requestId}`, { token: provider.token });
+      assert.equal(denied.status, 403);
+    }
+
+    // Admin in "Provider View" is not the assigned provider either.
+    const asAdminPreview = await get(`/api/provider/requests/${loc.requestId}`, { token: ctx.admin.token });
+    assert.equal(asAdminPreview.body.request?.location ?? null, null);
+  });
+
+  it('the assigned provider gets the location on jobs, bookings and transitions; others do not', async () => {
+    const jobs = await get('/api/provider/jobs', { token: loc.selected.token });
+    const job = jobs.body.jobs.find((item) => item.id === loc.requestId);
+    assert.equal(job.location.navigationUrl, NAV_URL);
+
+    const otherJobs = await get('/api/provider/jobs', { token: loc.other.token });
+    assert.ok(!otherJobs.body.jobs.some((item) => item.id === loc.requestId));
+
+    const booking = await get(`/api/bookings/${loc.bookingId}`, { token: loc.selected.token });
+    assert.equal(booking.status, 200);
+    assert.equal(booking.body.booking.request.location.navigationUrl, NAV_URL);
+
+    const customerBooking = await get(`/api/bookings/${loc.bookingId}`, { token: loc.customer.token });
+    assert.equal(customerBooking.body.booking.request.location.latitude, LOCATION.latitude);
+
+    for (const provider of [loc.other, loc.unrelated]) {
+      const denied = await get(`/api/bookings/${loc.bookingId}`, { token: provider.token });
+      assert.equal(denied.status, 403);
+    }
+
+    const scheduled = await post(`/api/requests/${loc.requestId}/schedule`, {
+      token: loc.selected.token,
+      body: { scheduledDate: dateOnly(3), scheduledTime: '11:00' },
+    });
+    assert.equal(scheduled.status, 200);
+    assert.equal(scheduled.body.request.location.latitude, LOCATION.latitude);
+  });
+
+  it('admin sees the location through the admin console', async () => {
+    const detail = await get(`/api/admin/requests/${loc.requestId}`, { token: ctx.admin.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.request.location.latitude, LOCATION.latitude);
+  });
+
+  it('existing requests without coordinates still work everywhere', async () => {
+    const legacy = await post('/api/requests', {
+      token: loc.customer.token,
+      body: requestPayload(ctx.acRepair.id),
+    });
+    assert.equal(legacy.status, 201);
+    assert.equal(legacy.body.request.location, null);
+
+    // Simulate a document written before the field existed.
+    const { default: ServiceRequest } = await import('../src/models/ServiceRequest.js');
+    const { default: mongoose } = await import('mongoose');
+    await ServiceRequest.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(legacy.body.request.id) },
+      { $unset: { location: '' } },
+    );
+
+    const detail = await get(`/api/requests/${legacy.body.request.id}`, { token: loc.customer.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.request.location, null);
+    assert.equal(detail.body.request.address.city, 'Bengaluru');
+
+    const discovery = await get(`/api/provider/requests/${legacy.body.request.id}`, {
+      token: loc.unrelated.token,
+    });
+    assert.equal(discovery.status, 200);
+    assert.equal(discovery.body.request.location, null);
+
+    const flow = await runFullFlow({ customer: loc.otherCustomer, provider: loc.unrelated, complete: false });
+    const jobs = await get('/api/provider/jobs', { token: loc.unrelated.token });
+    assert.equal(jobs.body.jobs.find((item) => item.id === flow.requestId).location, null);
+    const booking = await get(`/api/bookings/${flow.bookingId}`, { token: loc.unrelated.token });
+    assert.equal(booking.body.booking.request.location, null);
+  });
+
+  it('builds the navigation URL from coordinates and refuses to build a broken one', async () => {
+    const { buildNavigationUrl } = await import('../src/utils/location.js');
+    assert.equal(buildNavigationUrl(12.9716, 77.5946), NAV_URL);
+    assert.equal(
+      buildNavigationUrl(-33.8688, 151.2093),
+      'https://www.google.com/maps/dir/?api=1&destination=-33.8688,151.2093',
+    );
+    assert.equal(buildNavigationUrl(null, 77.5), null);
+    assert.equal(buildNavigationUrl(12.9, undefined), null);
   });
 });

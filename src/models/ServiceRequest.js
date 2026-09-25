@@ -2,8 +2,7 @@ import mongoose from 'mongoose';
 
 export const REQUEST_STATUSES = {
   PENDING: 'PENDING',
-  QUOTE_RECEIVED: 'QUOTE_RECEIVED',
-  QUOTE_ACCEPTED: 'QUOTE_ACCEPTED',
+  ACCEPTED: 'ACCEPTED',
   SCHEDULED: 'SCHEDULED',
   IN_PROGRESS: 'IN_PROGRESS',
   COMPLETED: 'COMPLETED',
@@ -40,6 +39,35 @@ const addressSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+    },
+  },
+  {
+    _id: false,
+  },
+);
+
+// Device-captured service location. Coordinates are the authoritative navigation
+// target; `address` is an optional human-readable hint (flat no., landmark). Absent on
+// requests created before this field existed.
+const locationSchema = new mongoose.Schema(
+  {
+    latitude: {
+      type: Number,
+      required: true,
+      min: -90,
+      max: 90,
+    },
+    longitude: {
+      type: Number,
+      required: true,
+      min: -180,
+      max: 180,
+    },
+    address: {
+      type: String,
+      trim: true,
+      maxlength: 240,
+      default: null,
     },
   },
   {
@@ -116,17 +144,25 @@ const serviceRequestSchema = new mongoose.Schema(
       type: voiceNoteSchema,
       default: null,
     },
+    // A request carries a captured `location`, a typed `address`, or both; the
+    // service layer enforces that at least one is present.
     address: {
       type: addressSchema,
-      required: true,
+      default: null,
     },
+    location: {
+      type: locationSchema,
+      default: null,
+    },
+    // Legacy only: requests created before the V1 accept flow carried a preferred slot.
+    // New requests leave these null; the provider sets the visit via schedule.
     preferredDate: {
       type: Date,
-      required: true,
+      default: null,
     },
     preferredTime: {
       type: String,
-      required: true,
+      default: null,
       trim: true,
     },
     status: {
@@ -136,15 +172,16 @@ const serviceRequestSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // The provider who accepted the request (the assigned provider). Set exactly once,
+    // atomically, by the accept endpoint.
     selectedProviderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       default: null,
       index: true,
     },
-    acceptedQuoteId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Quote',
+    acceptedAt: {
+      type: Date,
       default: null,
     },
     scheduledDate: {

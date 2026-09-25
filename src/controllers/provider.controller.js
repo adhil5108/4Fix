@@ -1,6 +1,5 @@
 import {
   getPublicProvider as getPublicProviderService,
-  listProvidersForRequest as listProvidersForRequestService,
 } from '../services/provider.service.js';
 import {
   getProviderRequest as getProviderRequestService,
@@ -28,12 +27,6 @@ export async function listProviderJobs(req, res) {
 
 export async function getPublicProvider(req, res) {
   const result = await getPublicProviderService(req.params.providerId);
-
-  res.status(200).json(result);
-}
-
-export async function listRequestProviders(req, res) {
-  const result = await listProvidersForRequestService(req.user, req.params.requestId);
 
   res.status(200).json(result);
 }

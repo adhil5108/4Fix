@@ -1,6 +1,5 @@
 import { BOOKING_POPULATE } from './booking.service.js';
 import Booking from '../models/Booking.js';
-import Quote from '../models/Quote.js';
 import Review from '../models/Review.js';
 import User, { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -8,7 +7,6 @@ import { parseObjectId } from '../utils/objectId.js';
 import { parsePagination, toPageResult } from '../utils/pagination.js';
 import { escapeRegex } from '../utils/text.js';
 import { toBookingForProvider } from './bookingPresenter.service.js';
-import { toQuoteForProvider } from './quotePresenter.service.js';
 import { getProviderStats } from './provider.service.js';
 import { toReview } from './reviewPresenter.service.js';
 import { toSafeUser } from './userPresenter.service.js';
@@ -73,9 +71,8 @@ export async function findAdminProviderOrFail(providerId) {
 
 export async function getAdminProvider(providerId) {
   const provider = await findAdminProviderOrFail(providerId);
-  const [stats, quotes, bookings, reviews] = await Promise.all([
+  const [stats, bookings, reviews] = await Promise.all([
     getProviderStats([provider.id]),
-    Quote.find({ providerId: provider.id }).sort({ createdAt: -1 }).limit(RECENT_LIMIT),
     Booking.find({ providerId: provider.id })
       .sort({ createdAt: -1 })
       .limit(RECENT_LIMIT)
@@ -88,7 +85,6 @@ export async function getAdminProvider(providerId) {
 
   return {
     provider: withStats(provider, stats),
-    quotes: quotes.map(toQuoteForProvider),
     bookings: bookings.map(toBookingForProvider),
     reviews: reviews.map((review) => toReview(review, { includeCustomer: true })),
   };

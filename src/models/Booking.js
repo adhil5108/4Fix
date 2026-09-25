@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
 
+// New bookings start ASSIGNED (the provider accepted the job themselves). CONFIRMED
+// only exists on bookings created by the pre-V1 quote flow.
 export const BOOKING_STATUSES = {
   CONFIRMED: 'CONFIRMED',
   ASSIGNED: 'ASSIGNED',
@@ -35,7 +37,7 @@ const locationSchema = new mongoose.Schema(
   },
 );
 
-// The confirmed customer/provider relationship for a request. Request details
+// The job created when a provider accepts a request: the customer/provider relationship. Request details
 // (service, address, description) stay on the ServiceRequest and are not copied.
 const bookingSchema = new mongoose.Schema(
   {
@@ -56,15 +58,10 @@ const bookingSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
-    quoteId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Quote',
-      required: true,
-    },
     bookingStatus: {
       type: String,
       enum: Object.values(BOOKING_STATUSES),
-      default: BOOKING_STATUSES.CONFIRMED,
+      default: BOOKING_STATUSES.ASSIGNED,
       required: true,
       index: true,
     },

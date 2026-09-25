@@ -32,7 +32,7 @@ export function toUserSummary(user) {
   };
 }
 
-// What a customer sees about their technician inside a booking/quote.
+// What a customer sees about their technician inside a request or booking.
 export function toProviderSummary(user) {
   if (!user) {
     return null;

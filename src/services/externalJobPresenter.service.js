@@ -38,8 +38,8 @@ export function toExternalJob(job) {
 }
 
 // Shaped to slot into the same "My Jobs" array as toProviderJob(): bookingId,
-// bookingStatus, service, amount, issueLabel, preferredDate/Time are always null since
-// an external job has no ServiceRequest/Booking/Quote behind it.
+// bookingStatus, service, issueLabel, preferredDate/Time are always null since an
+// external job has no ServiceRequest/Booking behind it.
 export function toExternalJobSummary(job) {
   return {
     id: job.id,
@@ -52,7 +52,6 @@ export function toExternalJobSummary(job) {
     issueLabel: null,
     description: job.description,
     customer: { name: job.customerName, phone: job.customerPhone },
-    amount: null,
     address: toAddress(job.address),
     scheduledDate: toDateOnlyString(job.scheduledDate),
     scheduledTime: job.scheduledTime,

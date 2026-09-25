@@ -1,5 +1,4 @@
 import Booking, { BOOKING_STATUSES } from '../models/Booking.js';
-import Quote from '../models/Quote.js';
 import { OTHER_ISSUE_KEY } from '../models/Service.js';
 import ServiceRequest, { REQUEST_STATUSES } from '../models/ServiceRequest.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -11,9 +10,12 @@ import {
 import { isSameId, parseObjectId, toIdString } from '../utils/objectId.js';
 import {
   assertTransition,
-  QUOTABLE_REQUEST_STATUSES,
+  OPEN_REQUEST_STATUSES,
 } from '../utils/requestStateMachine.js';
-import { requiredText } from '../utils/text.js';
+import { parseCoordinate } from '../utils/location.js';
+import { optionalText, requiredText } from '../utils/text.js';
+import { ensureBookingForAcceptedRequest, loadBooking } from './booking.service.js';
+import { toBookingForProvider } from './bookingPresenter.service.js';
 import { syncBookingWithRequest } from './bookingSync.service.js';
 import { listExternalJobsForProvider } from './externalJob.service.js';
 import {
@@ -31,18 +33,7 @@ export const CUSTOMER_POPULATE = [
   { path: 'selectedProviderId' },
 ];
 
-export const CUSTOMER_DETAIL_POPULATE = [
-  ...CUSTOMER_POPULATE,
-  { path: 'acceptedQuoteId', populate: { path: 'providerId' } },
-];
-
 const PROVIDER_DETAIL_POPULATE = [{ path: 'serviceId' }, { path: 'customerId' }];
-
-const PROVIDER_JOB_POPULATE = [
-  { path: 'serviceId' },
-  { path: 'customerId' },
-  { path: 'acceptedQuoteId' },
-];
 
 function validateAttachments(attachments) {
   if (attachments === undefined || attachments === null) {
@@ -104,7 +95,7 @@ function validateVoiceNote(voiceNote) {
 
 function validateAddress(address) {
   if (!address || typeof address !== 'object' || Array.isArray(address)) {
-    throw new ApiError(400, 'Address is required', 'VALIDATION_ERROR');
+    throw new ApiError(400, 'Location or address is required', 'VALIDATION_ERROR');
   }
 
   const pincode = typeof address.pincode === 'string' ? address.pincode.trim() : '';
@@ -122,6 +113,22 @@ function validateAddress(address) {
     city: requiredText(address.city, 'City', 2, 80),
     state: requiredText(address.state, 'State', 2, 80),
     pincode,
+  };
+}
+
+function validateLocation(location) {
+  if (location === undefined || location === null) {
+    return null;
+  }
+
+  if (typeof location !== 'object' || Array.isArray(location)) {
+    throw new ApiError(400, 'Location must be an object', 'VALIDATION_ERROR');
+  }
+
+  return {
+    latitude: parseCoordinate(location.latitude, 'Latitude', 90),
+    longitude: parseCoordinate(location.longitude, 'Longitude', 180),
+    address: optionalText(location.address, 'Location address', 240) || null,
   };
 }
 
@@ -188,7 +195,7 @@ export async function findCustomerRequestOrFail(requestId, customer) {
 }
 
 async function loadCustomerRequest(requestId) {
-  return ServiceRequest.findById(requestId).populate(CUSTOMER_DETAIL_POPULATE);
+  return ServiceRequest.findById(requestId).populate(CUSTOMER_POPULATE);
 }
 
 export async function createRequest(customer, input) {
@@ -197,11 +204,12 @@ export async function createRequest(customer, input) {
   const description = requiredText(input?.description, 'Description', 5, 2000);
   const attachments = validateAttachments(input?.attachments);
   const voiceNote = validateVoiceNote(input?.voiceNote);
-  const address = validateAddress(input?.address);
-  const preferredDate = parseDateOnly(input?.preferredDate, 'Preferred date');
-  const preferredTime = normalizeTimeOfDay(input?.preferredTime, 'Preferred time');
-
-  assertNotPastDate(preferredDate, 'Preferred date');
+  const location = validateLocation(input?.location);
+  // A captured location replaces the typed address; without one, the address is required.
+  const address =
+    location && (input?.address === undefined || input?.address === null)
+      ? null
+      : validateAddress(input?.address);
 
   const created = await ServiceRequest.create({
     customerId: customer.id,
@@ -212,11 +220,9 @@ export async function createRequest(customer, input) {
     attachments,
     voiceNote,
     address,
-    preferredDate,
-    preferredTime,
+    location,
     status: REQUEST_STATUSES.PENDING,
     selectedProviderId: null,
-    acceptedQuoteId: null,
     scheduledDate: null,
     scheduledTime: null,
   });
@@ -247,14 +253,13 @@ export async function listCustomerRequests(customer, query) {
 
 export async function getCustomerRequest(customer, requestId) {
   const request = await findCustomerRequestOrFail(requestId, customer);
-  const [detailedRequest, quotesCount, booking] = await Promise.all([
+  const [detailedRequest, booking] = await Promise.all([
     loadCustomerRequest(request.id),
-    Quote.countDocuments({ requestId: request.id }),
     Booking.findOne({ requestId: request.id }),
   ]);
 
   return {
-    request: toCustomerRequest(detailedRequest, { quotesCount, booking }),
+    request: toCustomerRequest(detailedRequest, { booking }),
   };
 }
 
@@ -301,10 +306,8 @@ async function applyProviderTransition(provider, requestId, targetStatus, extraF
 
   await syncBookingWithRequest(updated);
 
-  const ownQuote = await Quote.findOne({ requestId: updated.id, providerId: provider.id });
-
   return {
-    request: toProviderRequest(updated, { ownQuote }),
+    request: toProviderRequest(updated, { includeLocation: true }),
   };
 }
 
@@ -329,7 +332,7 @@ export function completeRequest(provider, requestId) {
 }
 
 export async function listAvailableRequests(_provider, query) {
-  const status = parseStatusFilter(query?.status, QUOTABLE_REQUEST_STATUSES);
+  const status = parseStatusFilter(query?.status, OPEN_REQUEST_STATUSES);
   const requests = await ServiceRequest.find({
     status: status || REQUEST_STATUSES.PENDING,
   })
@@ -341,7 +344,7 @@ export async function listAvailableRequests(_provider, query) {
   };
 }
 
-// Jobs the customer awarded to this provider, with booking state when one exists.
+// Requests this provider accepted, with booking state when one exists.
 export async function listProviderJobs(provider, query) {
   const status = parseStatusFilter(query?.status, Object.values(REQUEST_STATUSES));
   const bookingStatus = parseStatusFilter(query?.bookingStatus, Object.values(BOOKING_STATUSES));
@@ -353,7 +356,7 @@ export async function listProviderJobs(provider, query) {
 
   const requests = await ServiceRequest.find(filter)
     .sort({ updatedAt: -1 })
-    .populate(PROVIDER_JOB_POPULATE);
+    .populate(PROVIDER_DETAIL_POPULATE);
 
   const bookings = await Booking.find({
     requestId: { $in: requests.map((request) => request._id) },
@@ -382,76 +385,83 @@ export async function listProviderJobs(provider, query) {
   return { jobs };
 }
 
-export async function assertProviderCanAccessRequest(request, provider) {
+// Open requests are visible to every provider; once accepted, only to the assignee.
+function assertProviderCanAccessRequest(request, provider) {
   if (
-    QUOTABLE_REQUEST_STATUSES.includes(request.status) ||
+    OPEN_REQUEST_STATUSES.includes(request.status) ||
     isSameId(request.selectedProviderId, provider.id)
   ) {
     return;
   }
 
-  const ownQuote = await Quote.exists({ requestId: request.id, providerId: provider.id });
-
-  if (!ownQuote) {
-    throw new ApiError(403, 'Access denied', 'FORBIDDEN');
-  }
+  throw new ApiError(403, 'Access denied', 'FORBIDDEN');
 }
 
 export async function getProviderRequest(provider, requestId) {
   const request = await findRequestOrFail(requestId);
 
-  await assertProviderCanAccessRequest(request, provider);
+  assertProviderCanAccessRequest(request, provider);
 
-  const [detailedRequest, ownQuote] = await Promise.all([
+  const [detailedRequest, booking] = await Promise.all([
     ServiceRequest.findById(request.id).populate(PROVIDER_DETAIL_POPULATE),
-    Quote.findOne({ requestId: request.id, providerId: provider.id }),
+    Booking.findOne({ requestId: request.id, providerId: provider.id }),
   ]);
 
+  // Coordinates are for the assigned provider only, never for providers browsing.
   return {
-    request: toProviderRequest(detailedRequest, { ownQuote }),
+    request: toProviderRequest(detailedRequest, {
+      includeLocation: isSameId(request.selectedProviderId, provider.id),
+      booking,
+    }),
   };
 }
 
-export async function markRequestQuoteReceived(request) {
-  if (request.status !== REQUEST_STATUSES.PENDING) {
-    return;
-  }
+async function presentAcceptedRequest(requestId) {
+  const request = await ServiceRequest.findById(requestId).populate(PROVIDER_DETAIL_POPULATE);
+  const booking = await ensureBookingForAcceptedRequest(request);
 
-  assertTransition(request.status, REQUEST_STATUSES.QUOTE_RECEIVED);
-
-  await ServiceRequest.updateOne(
-    { _id: request.id, status: REQUEST_STATUSES.PENDING },
-    { $set: { status: REQUEST_STATUSES.QUOTE_RECEIVED } },
-  );
+  return {
+    request: toProviderRequest(request, { includeLocation: true, booking }),
+    booking: toBookingForProvider(await loadBooking(booking.id)),
+  };
 }
 
-export async function acceptQuoteOnRequest(request, quote, customer) {
-  assertTransition(request.status, REQUEST_STATUSES.QUOTE_ACCEPTED);
+// A provider claims an open request. The claim is a single conditional update on
+// { status: PENDING, selectedProviderId: null }, so when providers race exactly one
+// write matches; everyone else gets 409. Repeating the call as the winner is a no-op
+// that returns the same job (the booking's unique requestId prevents duplicates).
+export async function acceptRequest(provider, requestId) {
+  const request = await findRequestOrFail(requestId);
 
-  const updated = await ServiceRequest.findOneAndUpdate(
-    { _id: request.id, customerId: customer.id, status: REQUEST_STATUSES.QUOTE_RECEIVED },
+  if (isSameId(request.selectedProviderId, provider.id)) {
+    return presentAcceptedRequest(request.id);
+  }
+
+  const claimed = await ServiceRequest.findOneAndUpdate(
+    { _id: request.id, status: REQUEST_STATUSES.PENDING, selectedProviderId: null },
     {
       $set: {
-        status: REQUEST_STATUSES.QUOTE_ACCEPTED,
-        selectedProviderId: quote.providerId,
-        acceptedQuoteId: quote.id,
+        status: REQUEST_STATUSES.ACCEPTED,
+        selectedProviderId: provider.id,
+        acceptedAt: new Date(),
       },
     },
     { returnDocument: 'after' },
   );
 
-  if (!updated) {
-    throw new ApiError(409, 'Service request was updated, please retry', 'REQUEST_CONFLICT');
+  if (!claimed) {
+    const current = await ServiceRequest.findById(request.id);
+
+    if (isSameId(current?.selectedProviderId, provider.id)) {
+      return presentAcceptedRequest(request.id);
+    }
+
+    if (current?.selectedProviderId) {
+      throw new ApiError(409, 'This job has already been accepted.', 'REQUEST_ALREADY_ACCEPTED');
+    }
+
+    throw new ApiError(409, 'This request is no longer open.', 'REQUEST_NOT_OPEN');
   }
 
-  return updated;
-}
-
-export async function presentCustomerRequestById(requestId) {
-  const [request, booking] = await Promise.all([
-    loadCustomerRequest(requestId),
-    Booking.findOne({ requestId }),
-  ]);
-
-  return toCustomerRequest(request, { booking });
+  return presentAcceptedRequest(claimed.id);
 }

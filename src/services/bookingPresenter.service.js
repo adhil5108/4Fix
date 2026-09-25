@@ -1,6 +1,11 @@
 import { toDateOnlyString } from '../utils/dateTime.js';
 import { toIdString } from '../utils/objectId.js';
-import { isPopulated, toAddress, toVoiceNote } from './requestPresenter.service.js';
+import {
+  isPopulated,
+  toAddress,
+  toServiceLocation,
+  toVoiceNote,
+} from './requestPresenter.service.js';
 import { toPublicService } from './servicePresenter.service.js';
 import { toProviderSummary, toUserSummary } from './userPresenter.service.js';
 
@@ -18,6 +23,7 @@ function toBookingRequest(request) {
     attachments: request.attachments,
     voiceNote: toVoiceNote(request.voiceNote),
     address: toAddress(request.address),
+    location: toServiceLocation(request.location),
     preferredDate: toDateOnlyString(request.preferredDate),
     preferredTime: request.preferredTime,
   };
@@ -54,12 +60,10 @@ function toBookingBase(booking) {
   return {
     id: booking.id,
     requestId: toIdString(booking.requestId),
-    quoteId: toIdString(booking.quoteId),
     status: booking.bookingStatus,
     requestStatus: isPopulated(request) ? request.status : null,
     service: isPopulated(service) ? toPublicService(service) : null,
     request: toBookingRequest(request),
-    amount: isPopulated(booking.quoteId) ? booking.quoteId.amount : null,
     confirmedAt: booking.confirmedAt,
     scheduledDate: toDateOnlyString(booking.scheduledDate),
     scheduledTime: booking.scheduledTime,

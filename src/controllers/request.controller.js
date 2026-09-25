@@ -1,4 +1,5 @@
 import {
+  acceptRequest as acceptRequestService,
   cancelRequest as cancelRequestService,
   completeRequest as completeRequestService,
   createRequest as createRequestService,
@@ -28,6 +29,12 @@ export async function getRequest(req, res) {
 
 export async function cancelRequest(req, res) {
   const result = await cancelRequestService(req.user, req.params.requestId);
+
+  res.status(200).json(result);
+}
+
+export async function acceptRequest(req, res) {
+  const result = await acceptRequestService(req.user, req.params.requestId);
 
   res.status(200).json(result);
 }

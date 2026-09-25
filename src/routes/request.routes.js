@@ -1,7 +1,6 @@
 import { Router } from 'express';
-import { confirmBooking } from '../controllers/booking.controller.js';
-import { listRequestProviders } from '../controllers/provider.controller.js';
 import {
+  acceptRequest,
   cancelRequest,
   completeRequest,
   createRequest,
@@ -10,7 +9,6 @@ import {
   scheduleRequest,
   startRequest,
 } from '../controllers/request.controller.js';
-import { createQuote, listRequestQuotes } from '../controllers/quote.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorizeRoles } from '../middleware/authorizeRoles.js';
 import { USER_ROLES } from '../models/User.js';
@@ -35,30 +33,12 @@ router.post(
   authorizeRoles(USER_ROLES.CUSTOMER),
   asyncHandler(cancelRequest),
 );
-router.get(
-  '/:requestId/providers',
-  authorizeRoles(USER_ROLES.CUSTOMER),
-  asyncHandler(listRequestProviders),
-);
+// Any active PROVIDER may try to claim an open request; the service makes the claim
+// atomic so exactly one provider wins.
 router.post(
-  '/:requestId/confirm',
-  authorizeRoles(USER_ROLES.CUSTOMER),
-  asyncHandler(confirmBooking),
-);
-
-router.post(
-  '/:requestId/quotes',
+  '/:requestId/accept',
   authorizeRoles(USER_ROLES.PROVIDER),
-  asyncHandler(createQuote),
-);
-// listRequestQuotes falls into the provider branch for any non-CUSTOMER caller,
-// filtering by { providerId: user.id } — so ADMIN (added for Provider View, where
-// ProviderRequestDetailsPage fetches this alongside the request itself) always sees
-// an empty quote list, never a real provider's pricing.
-router.get(
-  '/:requestId/quotes',
-  authorizeRoles(USER_ROLES.CUSTOMER, USER_ROLES.PROVIDER, USER_ROLES.ADMIN),
-  asyncHandler(listRequestQuotes),
+  asyncHandler(acceptRequest),
 );
 
 router.post(

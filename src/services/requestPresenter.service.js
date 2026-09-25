@@ -1,6 +1,6 @@
 import { toDateOnlyString } from '../utils/dateTime.js';
+import { buildNavigationUrl } from '../utils/location.js';
 import { toIdString } from '../utils/objectId.js';
-import { toQuoteForCustomer, toQuoteForProvider } from './quotePresenter.service.js';
 import { toPublicService } from './servicePresenter.service.js';
 import { toProviderSummary, toUserSummary } from './userPresenter.service.js';
 
@@ -19,6 +19,37 @@ export function toAddress(address) {
     city: address.city,
     state: address.state,
     pincode: address.pincode,
+  };
+}
+
+// Customer coordinates are sensitive: only call this for audiences authorized to see
+// them (the customer, the selected provider, booking participants, admin).
+// Before a provider is assigned, browsing providers see only the area of a typed
+// address (enough to decide whether to accept), never the street line.
+function toAddressArea(address) {
+  if (!address) {
+    return null;
+  }
+
+  return {
+    label: null,
+    addressLine: null,
+    city: address.city,
+    state: address.state,
+    pincode: address.pincode,
+  };
+}
+
+export function toServiceLocation(location) {
+  if (!location || !Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) {
+    return null;
+  }
+
+  return {
+    latitude: location.latitude,
+    longitude: location.longitude,
+    address: location.address ?? null,
+    navigationUrl: buildNavigationUrl(location.latitude, location.longitude),
   };
 }
 
@@ -59,43 +90,44 @@ function toBookingRef(booking) {
   return { id: booking.id, status: booking.bookingStatus };
 }
 
-export function toCustomerRequest(request, { quotesCount, booking } = {}) {
+export function toCustomerRequest(request, { booking } = {}) {
   return {
     ...toRequestBase(request),
+    location: toServiceLocation(request.location),
     selectedProvider: isPopulated(request.selectedProviderId)
       ? toProviderSummary(request.selectedProviderId)
       : null,
     selectedProviderId: toIdString(request.selectedProviderId),
-    acceptedQuote: isPopulated(request.acceptedQuoteId)
-      ? toQuoteForCustomer(request.acceptedQuoteId)
-      : null,
-    acceptedQuoteId: toIdString(request.acceptedQuoteId),
-    ...(quotesCount === undefined ? {} : { quotesCount }),
+    acceptedAt: request.acceptedAt ?? null,
     ...(booking === undefined ? {} : { booking: booking ? toBookingRef(booking) : null }),
   };
 }
 
-// Discovery listing: no customer identity, only what is needed to price the job.
+// Discovery listing: no customer identity, coordinates or street address.
 export function toProviderRequestSummary(request) {
-  return toRequestBase(request);
+  return { ...toRequestBase(request), address: toAddressArea(request.address) };
 }
 
-export function toProviderRequest(request, { ownQuote } = {}) {
+// `includeLocation` must only be true for the provider assigned to the request.
+export function toProviderRequest(request, { includeLocation = false, booking } = {}) {
   return {
     ...toRequestBase(request),
+    address: includeLocation ? toAddress(request.address) : toAddressArea(request.address),
+    location: includeLocation ? toServiceLocation(request.location) : null,
     customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
     selectedProviderId: toIdString(request.selectedProviderId),
-    ownQuote: ownQuote ? toQuoteForProvider(ownQuote) : null,
+    acceptedAt: request.acceptedAt ?? null,
+    bookingId: booking ? booking.id : null,
   };
 }
 
-// A job the provider has won: the request plus its booking's operational state.
+// A job the provider accepted: the request plus its booking's operational state.
 export function toProviderJob(request, booking) {
   return {
     ...toRequestBase(request),
+    location: toServiceLocation(request.location),
     source: '4FIX',
     customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
-    amount: isPopulated(request.acceptedQuoteId) ? request.acceptedQuoteId.amount : null,
     bookingId: booking ? booking.id : null,
     bookingStatus: booking ? booking.bookingStatus : null,
     tracking: booking

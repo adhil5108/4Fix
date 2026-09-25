@@ -7,7 +7,6 @@ import externalJobRoutes from './routes/externalJob.routes.js';
 import healthRoutes from './routes/health.routes.js';
 import providerRoutes from './routes/provider.routes.js';
 import providersRoutes from './routes/providers.routes.js';
-import quoteRoutes from './routes/quote.routes.js';
 import requestRoutes from './routes/request.routes.js';
 import serviceRoutes from './routes/service.routes.js';
 import uploadRoutes from './routes/upload.routes.js';
@@ -24,7 +23,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/services', serviceRoutes);
 app.use('/api/requests', requestRoutes);
-app.use('/api/quotes', quoteRoutes);
 // More specific than '/api/provider' below, so it must be registered first.
 app.use('/api/provider/external-jobs', externalJobRoutes);
 app.use('/api/provider', providerRoutes);

@@ -13,10 +13,7 @@ import {
 } from '../services/adminProviders.service.js';
 import { getAdminCustomer, listAdminCustomers } from '../services/adminCustomers.service.js';
 import { getAdminRequest, listAdminRequests } from '../services/adminRequests.service.js';
-import { getAdminQuote, listAdminQuotes } from '../services/adminQuotes.service.js';
-import { adminAssignQuote } from '../services/quote.service.js';
 import { getAdminBooking, listAdminBookings } from '../services/adminBookings.service.js';
-import { getAdminPayment, listAdminPayments } from '../services/adminPayments.service.js';
 import { getAdminReview, listAdminReviews } from '../services/adminReviews.service.js';
 
 export async function getDashboard(_req, res) {
@@ -79,20 +76,6 @@ export async function getRequest(req, res) {
   res.status(200).json(await getAdminRequest(req.params.requestId));
 }
 
-// Quotes
-
-export async function listQuotes(req, res) {
-  res.status(200).json(await listAdminQuotes(req.query));
-}
-
-export async function getQuote(req, res) {
-  res.status(200).json(await getAdminQuote(req.params.quoteId));
-}
-
-export async function assignQuote(req, res) {
-  res.status(200).json(await adminAssignQuote(req.params.quoteId));
-}
-
 // Bookings
 
 export async function listBookings(req, res) {
@@ -101,16 +84,6 @@ export async function listBookings(req, res) {
 
 export async function getBooking(req, res) {
   res.status(200).json(await getAdminBooking(req.params.bookingId));
-}
-
-// Payments
-
-export async function listPayments(req, res) {
-  res.status(200).json(await listAdminPayments(req.query));
-}
-
-export async function getPayment(req, res) {
-  res.status(200).json(await getAdminPayment(req.params.paymentId));
 }
 
 // Reviews

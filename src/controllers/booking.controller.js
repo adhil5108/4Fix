@@ -1,6 +1,4 @@
 import {
-  assignBooking as assignBookingService,
-  confirmBooking as confirmBookingService,
   getBooking as getBookingService,
   getTracking as getTrackingService,
   listBookings as listBookingsService,
@@ -8,12 +6,6 @@ import {
   markOnTheWay as markOnTheWayService,
   updateLocation as updateLocationService,
 } from '../services/booking.service.js';
-
-export async function confirmBooking(req, res) {
-  const result = await confirmBookingService(req.user, req.params.requestId);
-
-  res.status(200).json(result);
-}
 
 export async function listBookings(req, res) {
   const result = await listBookingsService(req.user, req.query);
@@ -29,12 +21,6 @@ export async function getBooking(req, res) {
 
 export async function getTracking(req, res) {
   const result = await getTrackingService(req.user, req.params.bookingId);
-
-  res.status(200).json(result);
-}
-
-export async function assignBooking(req, res) {
-  const result = await assignBookingService(req.user, req.params.bookingId);
 
   res.status(200).json(result);
 }

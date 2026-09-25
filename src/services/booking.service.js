@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import Booking, { BOOKING_STATUSES } from '../models/Booking.js';
-import { REQUEST_STATUSES } from '../models/ServiceRequest.js';
 import { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
 import {
@@ -9,28 +8,18 @@ import {
   TERMINAL_BOOKING_STATUSES,
 } from '../utils/bookingStateMachine.js';
 import { parseDateOnly } from '../utils/dateTime.js';
+import { parseCoordinate } from '../utils/location.js';
 import { isSameId, parseObjectId } from '../utils/objectId.js';
 import {
   toBookingForCustomer,
   toBookingForProvider,
   toTracking,
 } from './bookingPresenter.service.js';
-import { getProviderStats } from './provider.service.js';
-import { toPublicProvider } from './providerPresenter.service.js';
-import { findCustomerRequestOrFail, presentCustomerRequestById } from './request.service.js';
-
-// A booking can be confirmed once a quote is accepted, even if the provider has
-// already scheduled the visit.
-const CONFIRMABLE_REQUEST_STATUSES = [
-  REQUEST_STATUSES.QUOTE_ACCEPTED,
-  REQUEST_STATUSES.SCHEDULED,
-];
 
 // Exported so the admin booking service can reuse the exact same populate shape
 // instead of redefining it.
 export const BOOKING_POPULATE = [
   { path: 'requestId', populate: { path: 'serviceId' } },
-  { path: 'quoteId' },
   { path: 'providerId' },
   { path: 'customerId' },
 ];
@@ -39,7 +28,7 @@ function generateArrivalCode() {
   return String(crypto.randomInt(1000, 10000));
 }
 
-function loadBooking(bookingId) {
+export function loadBooking(bookingId) {
   return Booking.findById(bookingId).populate(BOOKING_POPULATE);
 }
 
@@ -85,59 +74,37 @@ export async function findBookingForUser(bookingId, user) {
   return booking;
 }
 
-export async function confirmBooking(customer, requestId) {
-  const request = await findCustomerRequestOrFail(requestId, customer);
-  let booking = await Booking.findOne({ requestId: request.id });
+// Creates the job for a request its provider has just accepted. Idempotent: the unique
+// requestId index guarantees one booking per request, so a repeated or racing call
+// returns the existing booking instead of creating a second one.
+export async function ensureBookingForAcceptedRequest(request) {
+  const existing = await Booking.findOne({ requestId: request.id });
 
-  if (!booking) {
-    if (
-      !CONFIRMABLE_REQUEST_STATUSES.includes(request.status) ||
-      !request.selectedProviderId ||
-      !request.acceptedQuoteId
-    ) {
-      throw new ApiError(
-        409,
-        'Accept a quote before confirming the booking',
-        'REQUEST_NOT_CONFIRMABLE',
-      );
-    }
-
-    try {
-      booking = await Booking.create({
-        requestId: request.id,
-        customerId: request.customerId,
-        providerId: request.selectedProviderId,
-        quoteId: request.acceptedQuoteId,
-        bookingStatus: BOOKING_STATUSES.CONFIRMED,
-        confirmedAt: new Date(),
-        scheduledDate: request.scheduledDate,
-        scheduledTime: request.scheduledTime,
-        arrivalCode: generateArrivalCode(),
-      });
-    } catch (error) {
-      // Two confirmations raced; the unique requestId index kept a single booking.
-      if (error?.code !== 11000) {
-        throw error;
-      }
-
-      booking = await Booking.findOne({ requestId: request.id });
-    }
+  if (existing) {
+    return existing;
   }
 
-  const detailed = await loadBooking(booking.id);
-  const stats = await getProviderStats([detailed.providerId.id]);
+  const now = new Date();
 
-  return {
-    request: await presentCustomerRequestById(request.id),
-    provider: toPublicProvider(detailed.providerId, stats.get(detailed.providerId.id)),
-    booking: toBookingForCustomer(detailed),
-    // Only claims the backend can actually back. Verification/insurance do not exist yet.
-    safety: {
-      providerVerified: false,
-      insuranceIncluded: false,
-      arrivalCode: detailed.arrivalCode,
-    },
-  };
+  try {
+    return await Booking.create({
+      requestId: request.id,
+      customerId: request.customerId,
+      providerId: request.selectedProviderId,
+      bookingStatus: BOOKING_STATUSES.ASSIGNED,
+      confirmedAt: now,
+      technicianAssignedAt: now,
+      scheduledDate: request.scheduledDate,
+      scheduledTime: request.scheduledTime,
+      arrivalCode: generateArrivalCode(),
+    });
+  } catch (error) {
+    if (error?.code !== 11000) {
+      throw error;
+    }
+
+    return Booking.findOne({ requestId: request.id });
+  }
 }
 
 // Exported so the admin booking service can reuse the same status/group parsing.
@@ -229,12 +196,6 @@ async function applyTrackingTransition(provider, bookingId, targetStatus, extraF
   };
 }
 
-export function assignBooking(provider, bookingId) {
-  return applyTrackingTransition(provider, bookingId, BOOKING_STATUSES.ASSIGNED, {
-    technicianAssignedAt: new Date(),
-  });
-}
-
 export function markOnTheWay(provider, bookingId) {
   return applyTrackingTransition(provider, bookingId, BOOKING_STATUSES.ON_THE_WAY, {
     onTheWayAt: new Date(),
@@ -245,18 +206,6 @@ export function markArrived(provider, bookingId) {
   return applyTrackingTransition(provider, bookingId, BOOKING_STATUSES.ARRIVED, {
     arrivedAt: new Date(),
   });
-}
-
-function parseCoordinate(value, fieldName, limit) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < -limit || value > limit) {
-    throw new ApiError(
-      400,
-      `${fieldName} must be a number between -${limit} and ${limit}`,
-      'VALIDATION_ERROR',
-    );
-  }
-
-  return value;
 }
 
 export async function updateLocation(provider, bookingId, input) {

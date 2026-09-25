@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import {
-  assignBooking,
   getBooking,
   getTracking,
   listBookings,
@@ -15,7 +14,6 @@ import {
   openConversation,
   sendMessage,
 } from '../controllers/chat.controller.js';
-import { getPayment, markPaymentPaid } from '../controllers/payment.controller.js';
 import {
   createNote,
   deleteNote,
@@ -45,7 +43,6 @@ router.get(
   asyncHandler(getTracking),
 );
 
-router.post('/:bookingId/assign', authorizeRoles(PROVIDER), asyncHandler(assignBooking));
 router.post('/:bookingId/on-the-way', authorizeRoles(PROVIDER), asyncHandler(markOnTheWay));
 router.post('/:bookingId/arrived', authorizeRoles(PROVIDER), asyncHandler(markArrived));
 router.patch('/:bookingId/location', authorizeRoles(PROVIDER), asyncHandler(updateLocation));
@@ -71,21 +68,10 @@ router.post(
   asyncHandler(markMessagesRead),
 );
 
-router.get(
-  '/:bookingId/payment',
-  authorizeRoles(CUSTOMER, PROVIDER, ADMIN),
-  asyncHandler(getPayment),
-);
-router.post(
-  '/:bookingId/payment/mark-paid',
-  authorizeRoles(PROVIDER, ADMIN),
-  asyncHandler(markPaymentPaid),
-);
-
 router.post('/:bookingId/review', authorizeRoles(CUSTOMER), asyncHandler(createReview));
 router.get('/:bookingId/review', authorizeRoles(CUSTOMER, PROVIDER, ADMIN), asyncHandler(getReview));
 
-// Private to the assigned provider only — unlike chat/payment, neither the customer
+// Private to the assigned provider only — unlike chat, neither the customer
 // nor admin can read or write these (ownership re-checked in the service too).
 router.get('/:bookingId/notes', authorizeRoles(PROVIDER), asyncHandler(listNotes));
 router.post('/:bookingId/notes', authorizeRoles(PROVIDER), asyncHandler(createNote));

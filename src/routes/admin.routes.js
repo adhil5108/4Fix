@@ -1,22 +1,17 @@
 import { Router } from 'express';
 import {
-  assignQuote,
   createService,
   deleteService,
   getBooking,
   getCustomer,
   getDashboard,
-  getPayment,
   getProvider,
-  getQuote,
   getRequest,
   getReview,
   getService,
   listBookings,
   listCustomers,
-  listPayments,
   listProviders,
-  listQuotes,
   listRequests,
   listReviews,
   listServices,
@@ -52,15 +47,8 @@ router.get('/customers/:customerId', asyncHandler(getCustomer));
 router.get('/requests', asyncHandler(listRequests));
 router.get('/requests/:requestId', asyncHandler(getRequest));
 
-router.get('/quotes', asyncHandler(listQuotes));
-router.get('/quotes/:quoteId', asyncHandler(getQuote));
-router.post('/quotes/:quoteId/assign', asyncHandler(assignQuote));
-
 router.get('/bookings', asyncHandler(listBookings));
 router.get('/bookings/:bookingId', asyncHandler(getBooking));
-
-router.get('/payments', asyncHandler(listPayments));
-router.get('/payments/:paymentId', asyncHandler(getPayment));
 
 router.get('/reviews', asyncHandler(listReviews));
 router.get('/reviews/:reviewId', asyncHandler(getReview));

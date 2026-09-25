@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "test": "node --test \"tests/**/*.test.js\""
+    "test": "node --test \"tests/**/*.test.js\"",
+    "migrate:v1": "node scripts/migrate-v1-accept-flow.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
