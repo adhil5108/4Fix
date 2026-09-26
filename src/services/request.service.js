@@ -8,6 +8,7 @@ import {
   OPEN_REQUEST_STATUSES,
 } from '../utils/requestStateMachine.js';
 import { generateAccessToken, hashAccessToken } from '../utils/accessToken.js';
+import { normalizePhoneNumber } from '../utils/normalizePhone.js';
 import { parseCoordinate } from '../utils/location.js';
 import { optionalText, requiredText } from '../utils/text.js';
 import { ensureBookingForAcceptedRequest, loadBooking } from './booking.service.js';
@@ -112,6 +113,19 @@ function validateAddress(address) {
   };
 }
 
+// Name and phone are how the assigned provider reaches an account-less customer. They
+// are contact details only — access to the request stays with the access token.
+function validateCustomerDetails(details) {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) {
+    throw new ApiError(400, 'Customer details are required', 'VALIDATION_ERROR');
+  }
+
+  return {
+    name: requiredText(details.name, 'Customer name', 2, 120),
+    phone: normalizePhoneNumber(details.phone),
+  };
+}
+
 function validateLocation(location) {
   if (location === undefined || location === null) {
     return null;
@@ -201,6 +215,7 @@ async function loadCustomerRequest(requestId) {
 export async function createRequest(input) {
   const service = await getActiveServiceOrFail(input?.serviceId);
   const issue = resolveIssue(service, input?.issueKey);
+  const customerDetails = validateCustomerDetails(input?.customerDetails);
   const description = requiredText(input?.description, 'Description', 5, 2000);
   const attachments = validateAttachments(input?.attachments);
   const voiceNote = validateVoiceNote(input?.voiceNote);
@@ -214,6 +229,7 @@ export async function createRequest(input) {
   const accessToken = generateAccessToken();
   const created = await ServiceRequest.create({
     customerId: null,
+    customerDetails,
     accessTokenHash: hashAccessToken(accessToken),
     serviceId: service.id,
     issueKey: issue.issueKey,

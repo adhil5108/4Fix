@@ -7,7 +7,12 @@ import { findBookingForUser } from './booking.service.js';
 import { toConversation, toMessage } from './chatPresenter.service.js';
 
 const MAX_MESSAGES = 200;
-const CONVERSATION_POPULATE = [{ path: 'customerId' }, { path: 'providerId' }];
+// The booking's request carries the (account-less) customer's name for the chat header.
+const CONVERSATION_POPULATE = [
+  { path: 'customerId' },
+  { path: 'providerId' },
+  { path: 'bookingId', populate: { path: 'requestId' } },
+];
 
 // Messages from "the other side": each conversation has one customer and one provider,
 // so sides are identified by role (the anonymous customer has no user id).

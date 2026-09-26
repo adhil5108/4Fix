@@ -102,6 +102,30 @@ const voiceNoteSchema = new mongoose.Schema(
   },
 );
 
+// Contact details the (account-less) customer gives when requesting a service. They
+// belong to this request only — no User is created. Absent on pre-V1 requests.
+const customerDetailsSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      minlength: 2,
+      maxlength: 120,
+    },
+    // Normalized (spaces, dashes and brackets removed; optional leading +).
+    phone: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 16,
+    },
+  },
+  {
+    _id: false,
+  },
+);
+
 const serviceRequestSchema = new mongoose.Schema(
   {
     // Legacy only: requests from the old customer-account flow. V1 customers are
@@ -111,6 +135,10 @@ const serviceRequestSchema = new mongoose.Schema(
       ref: 'User',
       default: null,
       index: true,
+    },
+    customerDetails: {
+      type: customerDetailsSchema,
+      default: null,
     },
     // SHA-256 of the customer's request access token (the raw token is never stored).
     accessTokenHash: {

@@ -1,14 +1,18 @@
 import { toIdString } from '../utils/objectId.js';
-import { isPopulated } from './requestPresenter.service.js';
+import { isPopulated, toCustomerContact } from './requestPresenter.service.js';
 import { toUserSummary } from './userPresenter.service.js';
+
+function customerName(conversation) {
+  const request = isPopulated(conversation.bookingId) ? conversation.bookingId.requestId : null;
+  return toCustomerContact(request, conversation.customerId)?.name ?? null;
+}
 
 export function toConversation(conversation, { unreadCount } = {}) {
   return {
     id: conversation.id,
     bookingId: toIdString(conversation.bookingId),
-    customer: isPopulated(conversation.customerId)
-      ? toUserSummary(conversation.customerId)
-      : null,
+    // Participants (and admin) only: the customer's name, never their phone.
+    customer: customerName(conversation) ? { name: customerName(conversation) } : null,
     provider: isPopulated(conversation.providerId)
       ? toUserSummary(conversation.providerId)
       : null,

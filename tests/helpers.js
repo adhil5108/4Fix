@@ -104,6 +104,7 @@ export function requestPayload(serviceId, overrides = {}) {
   return {
     serviceId,
     description: 'The unit runs but the air stays warm.',
+    customerDetails: { name: 'Asha Customer', phone: '98765 43210' },
     attachments: [],
     address: {
       addressLine: '12 Lake View Road',

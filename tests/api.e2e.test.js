@@ -319,6 +319,69 @@ describe('anonymous customer requests', () => {
   });
 });
 
+describe('customer contact details', () => {
+  it('requires a name and phone, with no account involved', async () => {
+    const invalid = [
+      { customerDetails: undefined },
+      { customerDetails: null },
+      { customerDetails: 'Asha 9876543210' },
+      { customerDetails: { phone: '9876543210' } },
+      { customerDetails: { name: '   ', phone: '9876543210' } },
+      { customerDetails: { name: 'A', phone: '9876543210' } },
+      { customerDetails: { name: 'x'.repeat(121), phone: '9876543210' } },
+      { customerDetails: { name: 'Asha' } },
+      { customerDetails: { name: 'Asha', phone: '   ' } },
+      { customerDetails: { name: 'Asha', phone: '12345' } },
+      { customerDetails: { name: 'Asha', phone: 'call me' } },
+      { customerDetails: { name: 'Asha', phone: '0987654321' } },
+      { customerDetails: { name: 'Asha', phone: 9876543210 } },
+    ];
+
+    for (const overrides of invalid) {
+      const result = await post('/api/requests', { body: requestPayload(ctx.acRepair.id, overrides) });
+      assert.equal(result.status, 400, JSON.stringify(overrides));
+      assert.equal(result.body.error.code, 'VALIDATION_ERROR');
+    }
+  });
+
+  it('saves trimmed name and normalized phone on the request itself, not as a user', async () => {
+    const { default: User } = await import('../src/models/User.js');
+    const usersBefore = await User.countDocuments();
+
+    const created = await createRequest(
+      requestPayload(ctx.acRepair.id, { customerDetails: { name: '  Ravi Kumar ', phone: ' +91 98765-43211 ' } }),
+    );
+    assert.deepEqual(created.customerDetails, { name: 'Ravi Kumar', phone: '+919876543211' });
+    assert.equal(await User.countDocuments(), usersBefore);
+
+    const own = await get(`/api/requests/${created.id}`, { requestToken: created.token });
+    assert.deepEqual(own.body.request.customerDetails, { name: 'Ravi Kumar', phone: '+919876543211' });
+
+    // Contact details are not a credential: knowing them grants nothing.
+    assert.equal((await get(`/api/requests/${created.id}`)).status, 401);
+    assert.equal(
+      (await post(`/api/requests/${created.id}/cancel`, { requestToken: ctx.requestB.token })).status,
+      403,
+    );
+    assert.equal((await post(`/api/requests/${created.id}/cancel`, { requestToken: created.token })).status, 200);
+  });
+
+  it('the open feed and unassigned providers never see the name or phone', async () => {
+    const feed = await get('/api/provider/requests', { token: ctx.provider1.token });
+    const serialized = JSON.stringify(feed.body);
+    assert.ok(feed.body.requests.some((request) => request.id === ctx.requestA.id));
+    assert.equal(serialized.includes('Asha Customer'), false);
+    assert.equal(serialized.includes('9876543210'), false);
+    assert.ok(feed.body.requests.every((request) => !('customerDetails' in request) && !('customer' in request)));
+
+    const preview = await get(`/api/provider/requests/${ctx.requestA.id}`, { token: ctx.provider2.token });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.request.customer, null);
+    assert.equal(JSON.stringify(preview.body).includes('9876543210'), false);
+  });
+
+});
+
 describe('provider signup and profile', () => {
   const base = (overrides = {}) => ({
     name: 'Shop Provider',
@@ -443,6 +506,8 @@ describe('provider acceptance', () => {
     assert.equal(accepted.body.request.selectedProviderId, ctx.provider1.user.id);
     assert.ok(accepted.body.request.acceptedAt);
     assert.equal(accepted.body.request.location.navigationUrl, NAV_URL);
+    assert.deepEqual(accepted.body.request.customer, { name: 'Asha Customer', phone: '9876543210' });
+    assert.deepEqual(accepted.body.booking.customer, { name: 'Asha Customer', phone: '9876543210' });
     assert.equal(accepted.body.booking.status, 'ASSIGNED');
     assert.equal(accepted.body.booking.requestId, ctx.requestA.id);
     assert.equal(accepted.body.booking.request.location.navigationUrl, NAV_URL);
@@ -459,6 +524,10 @@ describe('provider acceptance', () => {
     assert.equal(job.bookingId, ctx.bookingA.id);
     assert.equal(job.bookingStatus, 'ASSIGNED');
     assert.equal(job.location.navigationUrl, NAV_URL);
+    assert.deepEqual(job.customer, { name: 'Asha Customer', phone: '9876543210' });
+
+    const detail = await get(`/api/provider/requests/${ctx.requestA.id}`, { token: ctx.provider1.token });
+    assert.equal(detail.body.request.customer.phone, '9876543210');
 
     const feed = await get('/api/provider/requests', { token: ctx.provider2.token });
     assert.ok(!feed.body.requests.some((request) => request.id === ctx.requestA.id));
@@ -480,6 +549,7 @@ describe('provider acceptance', () => {
     assert.equal(late.body.error.code, 'REQUEST_ALREADY_ACCEPTED');
     assert.equal(late.body.error.message, 'This job has already been accepted.');
     assert.ok(!JSON.stringify(late.body).includes('12.9716'));
+    assert.ok(!JSON.stringify(late.body).includes('9876543210'));
 
     const view = await get(`/api/provider/requests/${ctx.requestA.id}`, { token: ctx.provider2.token });
     assert.equal(view.status, 403);
@@ -624,6 +694,8 @@ describe('chat', () => {
 
     const providerSide = await post(path('/chat'), { token: ctx.provider1.token });
     assert.equal(providerSide.body.conversation.id, opened.body.conversation.id);
+    assert.deepEqual(providerSide.body.conversation.customer, { name: 'Asha Customer' });
+    assert.equal(JSON.stringify(providerSide.body).includes('9876543210'), false);
   });
 
   it('sends, lists and marks messages read, identifying sides by role', async () => {
@@ -1378,8 +1450,13 @@ describe('admin', () => {
     const listed = await get('/api/admin/requests', { token: ctx.admin.token });
     const row = listed.body.requests.find((request) => request.id === ctx.requestA.id);
     assert.ok(row);
-    assert.equal(row.customer, null);
+    assert.deepEqual(row.customer, { name: 'Asha Customer', phone: '9876543210' });
     assert.equal('accessTokenHash' in row, false);
+
+    const bySearch = await get('/api/admin/requests?search=9876543210', { token: ctx.admin.token });
+    assert.ok(bySearch.body.requests.some((request) => request.id === ctx.requestA.id));
+    const byName = await get('/api/admin/requests?search=asha', { token: ctx.admin.token });
+    assert.ok(byName.body.requests.some((request) => request.id === ctx.requestA.id));
 
     const filtered = await get('/api/admin/requests?status=CANCELLED', { token: ctx.admin.token });
     assert.ok(filtered.body.requests.every((request) => request.status === 'CANCELLED'));
@@ -1524,9 +1601,21 @@ describe('customer service location', () => {
       { $unset: { location: '' } },
     );
 
+    await ServiceRequest.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(flow.requestId) },
+      { $unset: { customerDetails: '' } },
+    );
+
     const detail = await get(`/api/requests/${flow.requestId}`, { requestToken: flow.token });
     assert.equal(detail.status, 200);
     assert.equal(detail.body.request.location, null);
+    assert.equal(detail.body.request.customerDetails, null);
+
+    const providerBooking = await get(`/api/bookings/${flow.bookingId}`, { token: provider.token });
+    assert.equal(providerBooking.status, 200);
+    assert.equal(providerBooking.body.booking.customer, null);
+    const adminView = await get(`/api/admin/requests/${flow.requestId}`, { token: ctx.admin.token });
+    assert.equal(adminView.body.request.customer, null);
 
     const jobs = await get('/api/provider/jobs', { token: provider.token });
     assert.equal(jobs.body.jobs.find((item) => item.id === flow.requestId).location, null);

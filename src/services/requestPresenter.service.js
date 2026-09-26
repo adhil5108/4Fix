@@ -2,7 +2,7 @@ import { toDateOnlyString } from '../utils/dateTime.js';
 import { buildNavigationUrl } from '../utils/location.js';
 import { toIdString } from '../utils/objectId.js';
 import { toPublicService } from './servicePresenter.service.js';
-import { toProviderSummary, toUserSummary } from './userPresenter.service.js';
+import { toProviderSummary } from './userPresenter.service.js';
 
 export function isPopulated(value) {
   return Boolean(value) && typeof value === 'object' && value._id !== undefined;
@@ -65,6 +65,17 @@ export function toVoiceNote(voiceNote) {
   };
 }
 
+// The customer's contact for this request: the name/phone they gave when requesting
+// (V1), or — for a pre-V1 request made from a customer account — that account's name.
+// Private: only for the customer themself, the assigned provider and admin.
+export function toCustomerContact(request, legacyCustomer = request?.customerId) {
+  if (request?.customerDetails?.name) {
+    return { name: request.customerDetails.name, phone: request.customerDetails.phone ?? null };
+  }
+
+  return isPopulated(legacyCustomer) ? { name: legacyCustomer.name, phone: null } : null;
+}
+
 function toRequestBase(request) {
   return {
     id: request.id,
@@ -92,6 +103,7 @@ export function toCustomerRequest(request, { booking } = {}) {
   return {
     ...toRequestBase(request),
     location: toServiceLocation(request.location),
+    customerDetails: toCustomerContact(request),
     selectedProvider: isPopulated(request.selectedProviderId)
       ? toProviderSummary(request.selectedProviderId)
       : null,
@@ -101,18 +113,19 @@ export function toCustomerRequest(request, { booking } = {}) {
   };
 }
 
-// Discovery listing: no customer identity, coordinates or street address.
+// Discovery listing: no customer name/phone, coordinates or street address.
 export function toProviderRequestSummary(request) {
   return { ...toRequestBase(request), address: toAddressArea(request.address) };
 }
 
-// `includeLocation` must only be true for the provider assigned to the request.
+// `includeLocation` must only be true for the provider assigned to the request: it
+// unlocks the exact location and the customer's contact details together.
 export function toProviderRequest(request, { includeLocation = false, booking } = {}) {
   return {
     ...toRequestBase(request),
     address: includeLocation ? toAddress(request.address) : toAddressArea(request.address),
     location: includeLocation ? toServiceLocation(request.location) : null,
-    customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
+    customer: includeLocation ? toCustomerContact(request) : null,
     selectedProviderId: toIdString(request.selectedProviderId),
     acceptedAt: request.acceptedAt ?? null,
     bookingId: booking ? booking.id : null,
@@ -125,7 +138,7 @@ export function toProviderJob(request, booking) {
     ...toRequestBase(request),
     location: toServiceLocation(request.location),
     source: '4FIX',
-    customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
+    customer: toCustomerContact(request),
     bookingId: booking ? booking.id : null,
     bookingStatus: booking ? booking.bookingStatus : null,
     timeline: booking

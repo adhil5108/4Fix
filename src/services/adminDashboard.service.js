@@ -8,8 +8,7 @@ import User, { USER_ROLES } from '../models/User.js';
 import { toBookingForCustomer } from './bookingPresenter.service.js';
 import { BOOKING_POPULATE } from './booking.service.js';
 import { CUSTOMER_POPULATE } from './request.service.js';
-import { isPopulated, toCustomerRequest } from './requestPresenter.service.js';
-import { toUserSummary } from './userPresenter.service.js';
+import { toCustomerContact, toCustomerRequest } from './requestPresenter.service.js';
 
 const RECENT_LIMIT = 5;
 const ACTIVE_BOOKING_STATUSES = [
@@ -67,7 +66,7 @@ export async function getAdminDashboard() {
     recent: {
       requests: recentRequests.map((request) => ({
         ...toCustomerRequest(request),
-        customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
+        customer: toCustomerContact(request),
       })),
       bookings: recentBookings.map(toBookingForCustomer),
     },

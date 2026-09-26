@@ -3,22 +3,23 @@ import Review from '../models/Review.js';
 import ServiceRequest, { REQUEST_STATUSES } from '../models/ServiceRequest.js';
 import { ApiError } from '../utils/ApiError.js';
 import { parseDateOnly } from '../utils/dateTime.js';
-import { parseObjectId } from '../utils/objectId.js';
+import { parseObjectId, toIdString } from '../utils/objectId.js';
 import { parsePagination, toPageResult } from '../utils/pagination.js';
 import { escapeRegex } from '../utils/text.js';
 import { toBookingForCustomer } from './bookingPresenter.service.js';
 import { BOOKING_POPULATE } from './booking.service.js';
 import { CUSTOMER_POPULATE, parseStatusFilter } from './request.service.js';
-import { isPopulated, toCustomerRequest } from './requestPresenter.service.js';
+import { toCustomerContact, toCustomerRequest } from './requestPresenter.service.js';
 import { toReview } from './reviewPresenter.service.js';
-import { toUserSummary } from './userPresenter.service.js';
 
 // `toCustomerRequest` already has everything (service, issue, location, assigned
 // provider); admin additionally needs to know whose request it is.
 function toAdminRequest(request, extra) {
   return {
     ...toCustomerRequest(request, extra),
-    customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
+    customer: toCustomerContact(request),
+    // Set only for pre-V1 requests made from a customer account (links to that record).
+    customerId: toIdString(request.customerId),
   };
 }
 
@@ -55,8 +56,14 @@ export async function listAdminRequests(query) {
     }
   }
 
+  // Admin search covers the problem text and the customer's name/phone.
   if (query?.search) {
-    filter.description = new RegExp(escapeRegex(String(query.search).trim()), 'i');
+    const pattern = new RegExp(escapeRegex(String(query.search).trim()), 'i');
+    filter.$or = [
+      { description: pattern },
+      { 'customerDetails.name': pattern },
+      { 'customerDetails.phone': pattern },
+    ];
   }
 
   const [requests, total] = await Promise.all([

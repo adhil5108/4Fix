@@ -3,11 +3,12 @@ import { toIdString } from '../utils/objectId.js';
 import {
   isPopulated,
   toAddress,
+  toCustomerContact,
   toServiceLocation,
   toVoiceNote,
 } from './requestPresenter.service.js';
 import { toPublicService } from './servicePresenter.service.js';
-import { toProviderSummary, toUserSummary } from './userPresenter.service.js';
+import { toProviderSummary } from './userPresenter.service.js';
 
 function toBookingRequest(request) {
   if (!isPopulated(request)) {
@@ -65,10 +66,15 @@ export function toBookingForCustomer(booking) {
   };
 }
 
+// Only the job's own provider (and admin) receive the customer's contact details.
+function customerContact(booking) {
+  return isPopulated(booking.requestId) ? toCustomerContact(booking.requestId, booking.customerId) : null;
+}
+
 export function toBookingForProvider(booking) {
   return {
     ...toBookingBase(booking),
-    customer: isPopulated(booking.customerId) ? toUserSummary(booking.customerId) : null,
+    customer: customerContact(booking),
     customerId: toIdString(booking.customerId),
   };
 }
@@ -78,7 +84,7 @@ export function toBookingForProvider(booking) {
 export function toBookingForAdmin(booking) {
   return {
     ...toBookingForCustomer(booking),
-    customer: isPopulated(booking.customerId) ? toUserSummary(booking.customerId) : null,
+    customer: customerContact(booking),
     customerId: toIdString(booking.customerId),
   };
 }
