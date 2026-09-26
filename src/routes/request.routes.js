@@ -5,56 +5,29 @@ import {
   completeRequest,
   createRequest,
   getRequest,
-  listRequests,
-  scheduleRequest,
   startRequest,
 } from '../controllers/request.controller.js';
-import { authenticate } from '../middleware/authenticate.js';
+import { authenticate, authenticateRequestOwner } from '../middleware/authenticate.js';
 import { authorizeRoles } from '../middleware/authorizeRoles.js';
+import { anonymousRequestLimit } from '../middleware/rateLimit.js';
 import { USER_ROLES } from '../models/User.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 const router = Router();
+const provider = [asyncHandler(authenticate), authorizeRoles(USER_ROLES.PROVIDER)];
 
-router.use(asyncHandler(authenticate));
+// Customers have no accounts: anyone may create a request (rate-limited), and the
+// response carries the one-time access token that owns it.
+router.post('/', anonymousRequestLimit, asyncHandler(createRequest));
 
-router.post('/', authorizeRoles(USER_ROLES.CUSTOMER), asyncHandler(createRequest));
-// ADMIN read-only for the "Customer View" area switcher: listCustomerRequests filters
-// by the caller's own id, so an admin (who owns none) always sees an empty list —
-// never another customer's requests. No admin write access is granted here.
-router.get(
-  '/',
-  authorizeRoles(USER_ROLES.CUSTOMER, USER_ROLES.ADMIN),
-  asyncHandler(listRequests),
-);
-router.get('/:requestId', authorizeRoles(USER_ROLES.CUSTOMER), asyncHandler(getRequest));
-router.post(
-  '/:requestId/cancel',
-  authorizeRoles(USER_ROLES.CUSTOMER),
-  asyncHandler(cancelRequest),
-);
-// Any active PROVIDER may try to claim an open request; the service makes the claim
-// atomic so exactly one provider wins.
-router.post(
-  '/:requestId/accept',
-  authorizeRoles(USER_ROLES.PROVIDER),
-  asyncHandler(acceptRequest),
-);
+// The customer's own request, authorized by its access token (X-Request-Token).
+router.get('/:requestId', asyncHandler(authenticateRequestOwner), asyncHandler(getRequest));
+router.post('/:requestId/cancel', asyncHandler(authenticateRequestOwner), asyncHandler(cancelRequest));
 
-router.post(
-  '/:requestId/schedule',
-  authorizeRoles(USER_ROLES.PROVIDER),
-  asyncHandler(scheduleRequest),
-);
-router.post(
-  '/:requestId/start',
-  authorizeRoles(USER_ROLES.PROVIDER),
-  asyncHandler(startRequest),
-);
-router.post(
-  '/:requestId/complete',
-  authorizeRoles(USER_ROLES.PROVIDER),
-  asyncHandler(completeRequest),
-);
+// Provider job actions. Accept claims an open request atomically so exactly one
+// provider wins; start/complete are the only other steps.
+router.post('/:requestId/accept', ...provider, asyncHandler(acceptRequest));
+router.post('/:requestId/start', ...provider, asyncHandler(startRequest));
+router.post('/:requestId/complete', ...provider, asyncHandler(completeRequest));
 
 export default router;

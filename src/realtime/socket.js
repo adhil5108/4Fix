@@ -1,7 +1,6 @@
 import { Server } from 'socket.io';
-import User from '../models/User.js';
+import { resolveRequestOwner, resolveUserFromJwt } from '../middleware/authenticate.js';
 import { findBookingForUser } from '../services/booking.service.js';
-import { verifyAccessToken } from '../services/token.service.js';
 
 let io = null;
 
@@ -9,26 +8,22 @@ function roomName(bookingId) {
   return `booking:${bookingId}`;
 }
 
-// Same JWT the REST API uses, just read from the handshake instead of a header —
-// no parallel auth mechanism.
+// Same credentials the REST API uses, read from the handshake instead of headers — a
+// provider/admin JWT (`auth.token`) or an anonymous customer's request access token
+// (`auth.requestToken`). No parallel auth mechanism.
 async function authenticateSocket(socket, next) {
   try {
-    const token = socket.handshake.auth?.token;
+    const { token, requestToken } = socket.handshake.auth || {};
 
-    if (!token) {
+    if (token) {
+      socket.user = await resolveUserFromJwt(token);
+    } else if (requestToken) {
+      socket.user = await resolveRequestOwner(requestToken);
+    } else {
       next(new Error('Authentication required'));
       return;
     }
 
-    const payload = verifyAccessToken(token);
-    const user = await User.findById(payload.sub);
-
-    if (!user || !user.isActive) {
-      next(new Error('Invalid authentication token'));
-      return;
-    }
-
-    socket.user = user;
     next();
   } catch (_error) {
     next(new Error('Invalid authentication token'));

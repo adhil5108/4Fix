@@ -1,21 +1,41 @@
 import { Router } from 'express';
 import { uploadAudio, uploadImage } from '../controllers/upload.controller.js';
-import { authenticate } from '../middleware/authenticate.js';
-import { authorizeRoles } from '../middleware/authorizeRoles.js';
+import { optionalAuthenticate } from '../middleware/authenticate.js';
 import { audioUploadMiddleware } from '../middleware/audioUpload.js';
 import { imageUploadMiddleware } from '../middleware/imageUpload.js';
+import { anonymousUploadLimit } from '../middleware/rateLimit.js';
 import { USER_ROLES } from '../models/User.js';
+import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 const router = Router();
 
-router.post('/image', asyncHandler(authenticate), imageUploadMiddleware, asyncHandler(uploadImage));
+// Customers upload photos/voice before their (anonymous) request exists, so these accept
+// unauthenticated callers, rate-limited per IP. Providers/admins upload with their JWT
+// (external-job photos, service images) and are not rate-limited.
+router.post(
+  '/image',
+  asyncHandler(optionalAuthenticate),
+  anonymousUploadLimit,
+  imageUploadMiddleware,
+  asyncHandler(uploadImage),
+);
 
-// Only customers record voice notes in V1 (attached to a request they're creating).
+// Voice notes belong to customer requests only, so provider/admin accounts are refused.
+function customersOnly(req, _res, next) {
+  if (req.user && req.user.role !== USER_ROLES.CUSTOMER) {
+    next(new ApiError(403, 'Access denied', 'FORBIDDEN'));
+    return;
+  }
+
+  next();
+}
+
 router.post(
   '/audio',
-  asyncHandler(authenticate),
-  authorizeRoles(USER_ROLES.CUSTOMER),
+  asyncHandler(optionalAuthenticate),
+  customersOnly,
+  anonymousUploadLimit,
   audioUploadMiddleware,
   asyncHandler(uploadAudio),
 );

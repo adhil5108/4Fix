@@ -8,13 +8,14 @@ const messageSchema = new mongoose.Schema(
       ref: 'Conversation',
       required: true,
     },
+    // The provider's user id; null for the anonymous customer (who has no account).
     senderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
     },
-    // Captured from req.user.role at send time so a message's identity never depends
-    // on comparing ids against the (possibly since-changed) conversation participants.
+    // A conversation has exactly one customer and one provider, so the role alone
+    // identifies the sender (and drives isMine / unread counts).
     senderRole: {
       type: String,
       enum: [USER_ROLES.CUSTOMER, USER_ROLES.PROVIDER],

@@ -12,10 +12,11 @@ const reviewSchema = new mongoose.Schema(
       ref: 'ServiceRequest',
       required: true,
     },
+    // Legacy only (old customer accounts); V1 reviews come from anonymous request owners.
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
     },
     providerId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -42,7 +43,8 @@ const reviewSchema = new mongoose.Schema(
   },
 );
 
-reviewSchema.index({ bookingId: 1, customerId: 1 }, { unique: true });
+// One review per booking (per job), whoever the customer is.
+reviewSchema.index({ bookingId: 1 }, { unique: true });
 
 const Review = mongoose.model('Review', reviewSchema);
 

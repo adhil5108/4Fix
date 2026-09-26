@@ -1,9 +1,6 @@
 import Booking, { BOOKING_STATUSES } from '../models/Booking.js';
 import { REQUEST_STATUSES } from '../models/ServiceRequest.js';
-import {
-  bookingSourceStatuses,
-  TERMINAL_BOOKING_STATUSES,
-} from '../utils/bookingStateMachine.js';
+import { TERMINAL_BOOKING_STATUSES } from '../utils/bookingStateMachine.js';
 
 // Keeps the operational booking in step with the request lifecycle. The request is the
 // source of truth; a request that has no booking yet is left alone.
@@ -12,19 +9,10 @@ export async function syncBookingWithRequest(request) {
   const now = new Date();
 
   switch (request.status) {
-    case REQUEST_STATUSES.SCHEDULED:
-      await Booking.updateOne(open, {
-        $set: { scheduledDate: request.scheduledDate, scheduledTime: request.scheduledTime },
-      });
-      return;
-
     case REQUEST_STATUSES.IN_PROGRESS:
       await Booking.updateOne(
-        {
-          requestId: request.id,
-          bookingStatus: { $in: bookingSourceStatuses(BOOKING_STATUSES.IN_SERVICE) },
-        },
-        { $set: { bookingStatus: BOOKING_STATUSES.IN_SERVICE, technicianStartedAt: now } },
+        { requestId: request.id, bookingStatus: BOOKING_STATUSES.ASSIGNED },
+        { $set: { bookingStatus: BOOKING_STATUSES.IN_PROGRESS, technicianStartedAt: now } },
       );
       return;
 

@@ -9,10 +9,16 @@ import { toConversation, toMessage } from './chatPresenter.service.js';
 const MAX_MESSAGES = 200;
 const CONVERSATION_POPULATE = [{ path: 'customerId' }, { path: 'providerId' }];
 
+// Messages from "the other side": each conversation has one customer and one provider,
+// so sides are identified by role (the anonymous customer has no user id).
+function fromOtherSide(user) {
+  return { senderRole: { $ne: user.role } };
+}
+
 function countUnread(conversation, user) {
   return Message.countDocuments({
     conversationId: conversation.id,
-    senderId: { $ne: user.id },
+    ...fromOtherSide(user),
     readAt: null,
   });
 }
@@ -34,7 +40,7 @@ async function ensureConversation(booking) {
       {
         $setOnInsert: {
           bookingId: booking.id,
-          customerId: booking.customerId,
+          customerId: booking.customerId ?? null,
           providerId: booking.providerId,
         },
       },
@@ -116,7 +122,7 @@ export async function sendMessage(user, bookingId, input) {
 
   const message = await Message.create({
     conversationId: conversation.id,
-    senderId: user.id,
+    senderId: user.id ?? null,
     senderRole: user.role,
     message: text,
     attachments,
@@ -127,7 +133,7 @@ export async function sendMessage(user, bookingId, input) {
 
   // `isMine` in toMessage() is computed for one specific viewer, which is wrong for
   // everyone else in the room, so the broadcast omits it — each client compares
-  // senderId against its own user id instead.
+  // senderRole against its own side instead.
   const { isMine: _isMine, ...broadcastMessage } = toMessage(message, user);
   emitToBooking(bookingId, 'message:new', broadcastMessage);
 
@@ -146,12 +152,12 @@ export async function markMessagesRead(user, bookingId) {
   }
 
   const result = await Message.updateMany(
-    { conversationId: conversation.id, senderId: { $ne: user.id }, readAt: null },
+    { conversationId: conversation.id, ...fromOtherSide(user), readAt: null },
     { $set: { readAt: new Date() } },
   );
 
   if (result.modifiedCount > 0) {
-    emitToBooking(bookingId, 'messages:read', { bookingId, readBy: user.id });
+    emitToBooking(bookingId, 'messages:read', { bookingId, readBy: user.role });
   }
 
   return { updatedCount: result.modifiedCount };

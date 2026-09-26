@@ -16,6 +16,14 @@ export function toSafeUser(user) {
     safeUser.serviceCategories = user.serviceCategories || [];
     safeUser.experienceYears = user.experienceYears ?? null;
     safeUser.isAvailable = user.isAvailable !== false;
+    // Own profile and admin views only — never part of the public provider profile.
+    safeUser.shopLocation = user.shopLocation
+      ? {
+          latitude: user.shopLocation.latitude,
+          longitude: user.shopLocation.longitude,
+          address: user.shopLocation.address ?? null,
+        }
+      : null;
   }
 
   return safeUser;

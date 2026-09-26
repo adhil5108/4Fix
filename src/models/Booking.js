@@ -1,44 +1,18 @@
 import mongoose from 'mongoose';
 
-// New bookings start ASSIGNED (the provider accepted the job themselves). CONFIRMED
-// only exists on bookings created by the pre-V1 quote flow.
+// V1 job lifecycle: the provider accepts (ASSIGNED), starts work (IN_PROGRESS) and
+// completes it. Pre-V1 statuses (CONFIRMED/ON_THE_WAY/ARRIVED/IN_SERVICE) are mapped
+// onto these by scripts/migrate-v1-accept-flow.js.
 export const BOOKING_STATUSES = {
-  CONFIRMED: 'CONFIRMED',
   ASSIGNED: 'ASSIGNED',
-  ON_THE_WAY: 'ON_THE_WAY',
-  ARRIVED: 'ARRIVED',
-  IN_SERVICE: 'IN_SERVICE',
+  IN_PROGRESS: 'IN_PROGRESS',
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
 };
 
-// Latest known technician position only; no location history is kept in V1.
-const locationSchema = new mongoose.Schema(
-  {
-    latitude: {
-      type: Number,
-      required: true,
-      min: -90,
-      max: 90,
-    },
-    longitude: {
-      type: Number,
-      required: true,
-      min: -180,
-      max: 180,
-    },
-    updatedAt: {
-      type: Date,
-      required: true,
-    },
-  },
-  {
-    _id: false,
-  },
-);
-
-// The job created when a provider accepts a request: the customer/provider relationship. Request details
-// (service, address, description) stay on the ServiceRequest and are not copied.
+// The job created when a provider accepts a request. Request details (service,
+// location, description) stay on the ServiceRequest and are not copied. Providers
+// never share a live position — navigation always targets the customer's location.
 const bookingSchema = new mongoose.Schema(
   {
     requestId: {
@@ -46,10 +20,11 @@ const bookingSchema = new mongoose.Schema(
       ref: 'ServiceRequest',
       required: true,
     },
+    // Legacy only: set for requests from the old customer-account flow.
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
       index: true,
     },
     providerId: {
@@ -65,35 +40,10 @@ const bookingSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // When the provider accepted the job.
     confirmedAt: {
       type: Date,
       required: true,
-    },
-    // Mirrors of the request schedule so booking lists can filter by date.
-    scheduledDate: {
-      type: Date,
-      default: null,
-    },
-    scheduledTime: {
-      type: String,
-      default: null,
-      trim: true,
-    },
-    arrivalCode: {
-      type: String,
-      required: true,
-    },
-    technicianAssignedAt: {
-      type: Date,
-      default: null,
-    },
-    onTheWayAt: {
-      type: Date,
-      default: null,
-    },
-    arrivedAt: {
-      type: Date,
-      default: null,
     },
     technicianStartedAt: {
       type: Date,
@@ -101,10 +51,6 @@ const bookingSchema = new mongoose.Schema(
     },
     completedAt: {
       type: Date,
-      default: null,
-    },
-    lastLocation: {
-      type: locationSchema,
       default: null,
     },
   },

@@ -7,10 +7,11 @@ const conversationSchema = new mongoose.Schema(
       ref: 'Booking',
       required: true,
     },
+    // Legacy only (old customer accounts); V1 customers are anonymous.
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
       index: true,
     },
     providerId: {

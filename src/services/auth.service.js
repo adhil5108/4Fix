@@ -5,11 +5,8 @@ import { verifyPassword } from './password.service.js';
 import { createAccessToken } from './token.service.js';
 import { toSafeUser } from './userPresenter.service.js';
 
-const AUTHENTICATED_ROLES = [
-  USER_ROLES.CUSTOMER,
-  USER_ROLES.PROVIDER,
-  USER_ROLES.ADMIN,
-];
+// Customer accounts from before V1 can no longer sign in; customers are anonymous.
+const AUTHENTICATED_ROLES = [USER_ROLES.PROVIDER, USER_ROLES.ADMIN];
 
 export function getCurrentUser(user) {
   return {

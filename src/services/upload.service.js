@@ -18,7 +18,8 @@ function toImageResult(asset) {
   };
 }
 
-// `user` is the authenticated uploader (req.user); never trust a client-supplied id.
+// `user` is the authenticated uploader (req.user), or undefined for an anonymous
+// customer; never trust a client-supplied id.
 export async function uploadImageAsset(file, user) {
   if (!file || !file.buffer || file.buffer.length === 0) {
     throw new ApiError(400, 'An image file is required', 'IMAGE_REQUIRED');
@@ -30,7 +31,7 @@ export async function uploadImageAsset(file, user) {
     asset = await cloudinary.uploader.upload(toDataUri(file), {
       folder: UPLOAD_FOLDER,
       resource_type: 'image',
-      context: { uploaded_by: String(user.id) },
+      context: { uploaded_by: user?.id ? String(user.id) : 'anonymous-customer' },
     });
   } catch (error) {
     // Cloudinary error details (never the configured secret) are logged server-side only.
@@ -65,7 +66,7 @@ export async function uploadAudioAsset(file, user) {
     asset = await cloudinary.uploader.upload(toDataUri(file), {
       folder: VOICE_NOTE_FOLDER,
       resource_type: 'video',
-      context: { uploaded_by: String(user.id) },
+      context: { uploaded_by: user?.id ? String(user.id) : 'anonymous-customer' },
     });
   } catch (error) {
     console.error('Cloudinary upload failed:', error?.message || error);

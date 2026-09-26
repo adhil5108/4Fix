@@ -79,8 +79,6 @@ function toRequestBase(request) {
     preferredDate: toDateOnlyString(request.preferredDate),
     preferredTime: request.preferredTime,
     status: request.status,
-    scheduledDate: toDateOnlyString(request.scheduledDate),
-    scheduledTime: request.scheduledTime,
     createdAt: request.createdAt,
     updatedAt: request.updatedAt,
   };
@@ -130,14 +128,11 @@ export function toProviderJob(request, booking) {
     customer: isPopulated(request.customerId) ? toUserSummary(request.customerId) : null,
     bookingId: booking ? booking.id : null,
     bookingStatus: booking ? booking.bookingStatus : null,
-    tracking: booking
+    timeline: booking
       ? {
-          confirmedAt: booking.confirmedAt,
-          technicianAssignedAt: booking.technicianAssignedAt,
-          onTheWayAt: booking.onTheWayAt,
-          arrivedAt: booking.arrivedAt,
-          technicianStartedAt: booking.technicianStartedAt,
-          completedAt: booking.completedAt,
+          acceptedAt: booking.confirmedAt,
+          startedAt: booking.technicianStartedAt ?? null,
+          completedAt: booking.completedAt ?? null,
         }
       : null,
   };

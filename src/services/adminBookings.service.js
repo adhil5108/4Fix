@@ -24,14 +24,14 @@ export async function listAdminBookings(query) {
   }
 
   if (query?.from || query?.to) {
-    filter.scheduledDate = {};
+    filter.createdAt = {};
 
     if (query.from) {
-      filter.scheduledDate.$gte = parseDateOnly(query.from, 'From date');
+      filter.createdAt.$gte = parseDateOnly(query.from, 'From date');
     }
 
     if (query.to) {
-      filter.scheduledDate.$lte = parseDateOnly(query.to, 'To date');
+      filter.createdAt.$lte = parseDateOnly(query.to, 'To date');
     }
   }
 

@@ -1,4 +1,4 @@
-import { isSameId, toIdString } from '../utils/objectId.js';
+import { toIdString } from '../utils/objectId.js';
 import { isPopulated } from './requestPresenter.service.js';
 import { toUserSummary } from './userPresenter.service.js';
 
@@ -20,14 +20,14 @@ export function toConversation(conversation, { unreadCount } = {}) {
   };
 }
 
-// `isMine` is computed for the requesting participant so clients need no id juggling.
+// `isMine` is computed for the requesting participant (by side: CUSTOMER or PROVIDER).
 export function toMessage(message, viewer) {
   return {
     id: message.id,
     conversationId: toIdString(message.conversationId),
     senderId: toIdString(message.senderId),
     senderRole: message.senderRole,
-    isMine: isSameId(message.senderId, viewer.id),
+    isMine: message.senderRole === viewer.role,
     message: message.message,
     attachments: message.attachments,
     readAt: message.readAt,

@@ -17,6 +17,8 @@ function parseRating(value) {
   return value;
 }
 
+// `customer` is the anonymous request owner: findBookingForUser only lets them reach the
+// booking created from their own request, so no one can review someone else's job.
 export async function createReview(customer, bookingId, input) {
   const rating = parseRating(input?.rating);
   const comment = optionalText(input?.comment, 'Comment', 1000);
@@ -30,7 +32,7 @@ export async function createReview(customer, bookingId, input) {
     );
   }
 
-  const existing = await Review.exists({ bookingId: booking.id, customerId: customer.id });
+  const existing = await Review.exists({ bookingId: booking.id });
 
   if (existing) {
     throw new ApiError(409, 'You have already reviewed this booking', 'REVIEW_EXISTS');
@@ -42,7 +44,7 @@ export async function createReview(customer, bookingId, input) {
     review = await Review.create({
       bookingId: booking.id,
       requestId: booking.requestId,
-      customerId: customer.id,
+      customerId: customer.id ?? null,
       providerId: booking.providerId,
       rating,
       comment,

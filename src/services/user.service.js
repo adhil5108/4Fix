@@ -1,6 +1,7 @@
 import User, { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
 import { optionalText, requiredText, stringList } from '../utils/text.js';
+import { validateShopLocation } from '../utils/shopLocation.js';
 import { toSafeUser } from './userPresenter.service.js';
 
 function parseExperienceYears(value) {
@@ -44,6 +45,10 @@ function buildUpdate(user, input) {
 
     if (input?.experienceYears !== undefined) {
       update.experienceYears = parseExperienceYears(input.experienceYears);
+    }
+
+    if (input?.shopLocation !== undefined) {
+      update.shopLocation = validateShopLocation(input.shopLocation);
     }
 
     if (input?.isAvailable !== undefined) {

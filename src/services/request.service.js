@@ -2,16 +2,12 @@ import Booking, { BOOKING_STATUSES } from '../models/Booking.js';
 import { OTHER_ISSUE_KEY } from '../models/Service.js';
 import ServiceRequest, { REQUEST_STATUSES } from '../models/ServiceRequest.js';
 import { ApiError } from '../utils/ApiError.js';
-import {
-  assertNotPastDate,
-  normalizeTimeOfDay,
-  parseDateOnly,
-} from '../utils/dateTime.js';
 import { isSameId, parseObjectId, toIdString } from '../utils/objectId.js';
 import {
   assertTransition,
   OPEN_REQUEST_STATUSES,
 } from '../utils/requestStateMachine.js';
+import { generateAccessToken, hashAccessToken } from '../utils/accessToken.js';
 import { parseCoordinate } from '../utils/location.js';
 import { optionalText, requiredText } from '../utils/text.js';
 import { ensureBookingForAcceptedRequest, loadBooking } from './booking.service.js';
@@ -184,10 +180,12 @@ async function findRequestOrFail(requestId) {
   return request;
 }
 
+// `customer` is the anonymous principal from the request access token; it may only
+// reach the one request that token was issued for.
 export async function findCustomerRequestOrFail(requestId, customer) {
   const request = await findRequestOrFail(requestId);
 
-  if (!isSameId(request.customerId, customer.id)) {
+  if (!customer?.requestId || !isSameId(request.id, customer.requestId)) {
     throw new ApiError(403, 'Access denied', 'FORBIDDEN');
   }
 
@@ -198,7 +196,9 @@ async function loadCustomerRequest(requestId) {
   return ServiceRequest.findById(requestId).populate(CUSTOMER_POPULATE);
 }
 
-export async function createRequest(customer, input) {
+// Anonymous: no account is involved. The customer owns the request through a random
+// access token returned once here; only its hash is stored.
+export async function createRequest(input) {
   const service = await getActiveServiceOrFail(input?.serviceId);
   const issue = resolveIssue(service, input?.issueKey);
   const description = requiredText(input?.description, 'Description', 5, 2000);
@@ -211,8 +211,10 @@ export async function createRequest(customer, input) {
       ? null
       : validateAddress(input?.address);
 
+  const accessToken = generateAccessToken();
   const created = await ServiceRequest.create({
-    customerId: customer.id,
+    customerId: null,
+    accessTokenHash: hashAccessToken(accessToken),
     serviceId: service.id,
     issueKey: issue.issueKey,
     issueLabel: issue.issueLabel,
@@ -223,31 +225,13 @@ export async function createRequest(customer, input) {
     location,
     status: REQUEST_STATUSES.PENDING,
     selectedProviderId: null,
-    scheduledDate: null,
-    scheduledTime: null,
   });
 
   await created.populate(CUSTOMER_POPULATE);
 
   return {
     request: toCustomerRequest(created),
-  };
-}
-
-export async function listCustomerRequests(customer, query) {
-  const status = parseStatusFilter(query?.status, Object.values(REQUEST_STATUSES));
-  const filter = { customerId: customer.id };
-
-  if (status) {
-    filter.status = status;
-  }
-
-  const requests = await ServiceRequest.find(filter)
-    .sort({ createdAt: -1 })
-    .populate(CUSTOMER_POPULATE);
-
-  return {
-    requests: requests.map((request) => toCustomerRequest(request)),
+    accessToken,
   };
 }
 
@@ -269,7 +253,7 @@ export async function cancelRequest(customer, requestId) {
   assertTransition(request.status, REQUEST_STATUSES.CANCELLED);
 
   const cancelled = await ServiceRequest.findOneAndUpdate(
-    { _id: request.id, customerId: customer.id, status: request.status },
+    { _id: request.id, status: request.status },
     { $set: { status: REQUEST_STATUSES.CANCELLED } },
     { returnDocument: 'after' },
   ).populate(CUSTOMER_POPULATE);
@@ -309,18 +293,6 @@ async function applyProviderTransition(provider, requestId, targetStatus, extraF
   return {
     request: toProviderRequest(updated, { includeLocation: true }),
   };
-}
-
-export async function scheduleRequest(provider, requestId, input) {
-  const scheduledDate = parseDateOnly(input?.scheduledDate, 'Scheduled date');
-  const scheduledTime = normalizeTimeOfDay(input?.scheduledTime, 'Scheduled time');
-
-  assertNotPastDate(scheduledDate, 'Scheduled date');
-
-  return applyProviderTransition(provider, requestId, REQUEST_STATUSES.SCHEDULED, {
-    scheduledDate,
-    scheduledTime,
-  });
 }
 
 export function startRequest(provider, requestId) {

@@ -3,7 +3,6 @@ import mongoose from 'mongoose';
 export const REQUEST_STATUSES = {
   PENDING: 'PENDING',
   ACCEPTED: 'ACCEPTED',
-  SCHEDULED: 'SCHEDULED',
   IN_PROGRESS: 'IN_PROGRESS',
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
@@ -105,11 +104,19 @@ const voiceNoteSchema = new mongoose.Schema(
 
 const serviceRequestSchema = new mongoose.Schema(
   {
+    // Legacy only: requests from the old customer-account flow. V1 customers are
+    // anonymous and own a request through `accessTokenHash` instead.
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
       index: true,
+    },
+    // SHA-256 of the customer's request access token (the raw token is never stored).
+    accessTokenHash: {
+      type: String,
+      default: null,
+      select: false,
     },
     serviceId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -155,7 +162,6 @@ const serviceRequestSchema = new mongoose.Schema(
       default: null,
     },
     // Legacy only: requests created before the V1 accept flow carried a preferred slot.
-    // New requests leave these null; the provider sets the visit via schedule.
     preferredDate: {
       type: Date,
       default: null,
@@ -184,19 +190,15 @@ const serviceRequestSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-    scheduledDate: {
-      type: Date,
-      default: null,
-    },
-    scheduledTime: {
-      type: String,
-      default: null,
-      trim: true,
-    },
   },
   {
     timestamps: true,
   },
+);
+
+serviceRequestSchema.index(
+  { accessTokenHash: 1 },
+  { unique: true, partialFilterExpression: { accessTokenHash: { $type: 'string' } } },
 );
 
 const ServiceRequest = mongoose.model('ServiceRequest', serviceRequestSchema);

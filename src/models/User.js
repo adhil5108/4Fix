@@ -1,10 +1,40 @@
 import mongoose from 'mongoose';
 
+// CUSTOMER is kept for legacy accounts and as the role of the anonymous request-owner
+// principal; V1 creates no customer accounts and customers cannot log in.
 export const USER_ROLES = {
   CUSTOMER: 'CUSTOMER',
   PROVIDER: 'PROVIDER',
   ADMIN: 'ADMIN',
 };
+
+// A provider's registered shop/business location. It is a fixed profile field, never a
+// live position: 4Fix does not track providers.
+const shopLocationSchema = new mongoose.Schema(
+  {
+    latitude: {
+      type: Number,
+      required: true,
+      min: -90,
+      max: 90,
+    },
+    longitude: {
+      type: Number,
+      required: true,
+      min: -180,
+      max: 180,
+    },
+    address: {
+      type: String,
+      trim: true,
+      maxlength: 240,
+      default: null,
+    },
+  },
+  {
+    _id: false,
+  },
+);
 
 const userSchema = new mongoose.Schema(
   {
@@ -66,6 +96,12 @@ const userSchema = new mongoose.Schema(
     isAvailable: {
       type: Boolean,
       default: true,
+    },
+    // Required at provider signup; null for providers registered before V1 until they
+    // set it from their profile.
+    shopLocation: {
+      type: shopLocationSchema,
+      default: null,
     },
   },
   {

@@ -1,11 +1,12 @@
 import User, { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
 import { normalizePhoneNumber } from '../utils/normalizePhone.js';
+import { validateShopLocation } from '../utils/shopLocation.js';
 import { hashPassword } from './password.service.js';
 import { createAccessToken } from './token.service.js';
 import { toSafeUser } from './userPresenter.service.js';
 
-function validateSignupInput({ name, phoneNumber, password, confirmPassword }) {
+function validateSignupInput({ name, phoneNumber, password, confirmPassword } = {}) {
   if (typeof name !== 'string' || name.trim().length < 2) {
     throw new ApiError(400, 'Name must be at least 2 characters', 'VALIDATION_ERROR');
   }
@@ -25,8 +26,10 @@ function validateSignupInput({ name, phoneNumber, password, confirmPassword }) {
   }
 }
 
-async function signupWithRole(input, role) {
+// Only providers have accounts in V1; customers use 4Fix anonymously.
+export async function signupProvider(input) {
   validateSignupInput(input);
+  const shopLocation = validateShopLocation(input?.shopLocation);
 
   const username = normalizePhoneNumber(input.phoneNumber);
   const existingUser = await User.exists({ username });
@@ -39,21 +42,14 @@ async function signupWithRole(input, role) {
     name: input.name.trim(),
     username,
     passwordHash: await hashPassword(input.password),
-    role,
+    role: USER_ROLES.PROVIDER,
     phoneVerifiedAt: null,
     isActive: true,
+    shopLocation,
   });
 
   return {
     accessToken: createAccessToken(user),
     user: toSafeUser(user),
   };
-}
-
-export function signupCustomer(input) {
-  return signupWithRole(input, USER_ROLES.CUSTOMER);
-}
-
-export function signupProvider(input) {
-  return signupWithRole(input, USER_ROLES.PROVIDER);
 }
