@@ -279,6 +279,8 @@ describe('anonymous customer requests', () => {
     const own = await get(`/api/requests/${ctx.requestA.id}`, { requestToken: ctx.requestA.token });
     assert.equal(own.status, 200);
     assert.equal(own.body.request.id, ctx.requestA.id);
+    // Unassigned: no provider, so no provider phone either.
+    assert.equal(own.body.request.provider, null);
     assert.equal(own.body.request.location.navigationUrl, NAV_URL);
     assert.equal(own.body.request.booking, null);
 
@@ -536,11 +538,33 @@ describe('provider acceptance', () => {
   it('the customer sees the assigned provider and their job', async () => {
     const detail = await get(`/api/requests/${ctx.requestA.id}`, { requestToken: ctx.requestA.token });
     assert.equal(detail.status, 200);
+    assert.deepEqual(detail.body.request.provider, { name: 'Prakash Tech', phone: '9876500011' });
     assert.equal(detail.body.request.status, 'ACCEPTED');
     assert.equal(detail.body.request.selectedProvider.id, ctx.provider1.user.id);
     assert.equal(detail.body.request.selectedProvider.name, 'Prakash Tech');
     assert.equal('shopLocation' in detail.body.request.selectedProvider, false);
     assert.equal(detail.body.request.booking.id, ctx.bookingA.id);
+  });
+
+  it('only the request\'s own token receives the assigned provider\'s phone', async () => {
+    const path = `/api/requests/${ctx.requestA.id}`;
+    for (const auth of [
+      {},
+      { requestToken: 'x'.repeat(43) },
+      { requestToken: ctx.requestB.token },
+      { token: ctx.provider2.token },
+      { token: ctx.provider1.token },
+    ]) {
+      const result = await get(path, auth);
+      assert.ok([401, 403].includes(result.status), JSON.stringify(Object.keys(auth)));
+      assert.equal(JSON.stringify(result.body).includes('9876500011'), false);
+    }
+
+    // Provider-facing responses never carry the provider phone field.
+    const feed = await get('/api/provider/requests', { token: ctx.provider2.token });
+    assert.equal(JSON.stringify(feed.body).includes('9876500011'), false);
+    const jobs = await get('/api/provider/jobs', { token: ctx.provider1.token });
+    assert.ok(jobs.body.jobs.every((job) => !('provider' in job)));
   });
 
   it('a second provider gets 409 and the assignment does not change', async () => {

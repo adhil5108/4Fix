@@ -99,6 +99,16 @@ function toBookingRef(booking) {
   return { id: booking.id, status: booking.bookingStatus };
 }
 
+// The assigned provider's contact for the customer: name and the phone number they
+// registered with (their account username, which is the normalized phone). Null until a
+// provider accepts. Served only on request-token-authorized customer responses (and
+// admin views) — never on the provider feeds, which use the provider presenters below.
+function toAssignedProviderContact(request) {
+  const provider = request.selectedProviderId;
+
+  return isPopulated(provider) ? { name: provider.name, phone: provider.username ?? null } : null;
+}
+
 export function toCustomerRequest(request, { booking } = {}) {
   return {
     ...toRequestBase(request),
@@ -108,6 +118,7 @@ export function toCustomerRequest(request, { booking } = {}) {
       ? toProviderSummary(request.selectedProviderId)
       : null,
     selectedProviderId: toIdString(request.selectedProviderId),
+    provider: toAssignedProviderContact(request),
     acceptedAt: request.acceptedAt ?? null,
     ...(booking === undefined ? {} : { booking: booking ? toBookingRef(booking) : null }),
   };
