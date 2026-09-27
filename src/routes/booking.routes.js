@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getBooking, listBookings } from '../controllers/booking.controller.js';
 import {
   getConversation,
+  getUnreadSummary,
   listMessages,
   markMessagesRead,
   openConversation,
@@ -29,6 +30,9 @@ const router = Router();
 router.use(asyncHandler(authenticateAny));
 
 router.get('/', authorizeRoles(CUSTOMER, PROVIDER, ADMIN), asyncHandler(listBookings));
+// Unread chat counts for the caller's own conversations. Participants only: admin reads
+// chats but is never a recipient. Must precede '/:bookingId'.
+router.get('/unread', authorizeRoles(CUSTOMER, PROVIDER), asyncHandler(getUnreadSummary));
 router.get('/:bookingId', authorizeRoles(CUSTOMER, PROVIDER, ADMIN), asyncHandler(getBooking));
 
 // Admin can read any conversation platform-wide (ADMIN bypasses ownership inside

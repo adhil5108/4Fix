@@ -11,13 +11,16 @@ process.env.PASSWORD_SALT_ROUNDS = '4';
 process.env.ANON_REQUESTS_PER_HOUR = '100000';
 process.env.ANON_UPLOADS_PER_HOUR = '100000';
 
+import http from 'node:http';
 import mongoose from 'mongoose';
+import { io as connectClient } from 'socket.io-client';
 
 let server;
 let baseUrl;
 
 export async function startTestServer() {
   const { default: app } = await import('../src/app.js');
+  const { initSocket } = await import('../src/realtime/socket.js');
 
   await mongoose.connect(process.env.MONGODB_URI);
 
@@ -27,8 +30,11 @@ export async function startTestServer() {
 
   await mongoose.connection.dropDatabase();
 
+  // Same wiring as server.js, so real-time events can be tested end to end.
+  server = http.createServer(app);
+  initSocket(server);
   await new Promise((resolve) => {
-    server = app.listen(0, '127.0.0.1', resolve);
+    server.listen(0, '127.0.0.1', resolve);
   });
 
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -37,6 +43,8 @@ export async function startTestServer() {
 
 export async function stopTestServer() {
   if (server) {
+    const { closeSocket } = await import('../src/realtime/socket.js');
+    await closeSocket();
     await new Promise((resolve) => server.close(resolve));
   }
 
@@ -62,6 +70,42 @@ export async function api(method, path, { token, requestToken, body } = {}) {
 
   return { status: response.status, body: payload };
 }
+
+// A Socket.IO client authenticated like the app's: `{ token }` (provider/admin JWT) or
+// `{ requestToken }` (anonymous customer). Records every event it receives in `events`.
+export async function connectSocket(auth) {
+  const socket = connectClient(baseUrl, { auth, transports: ['websocket'], reconnection: false, forceNew: true });
+  socket.events = [];
+  socket.onAny((event, payload) => socket.events.push({ event, payload }));
+
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('connect_error', reject);
+  });
+
+  return socket;
+}
+
+// Resolves once `socket` has received `count` events named `event` (or rejects).
+export function waitForEvents(socket, event, count = 1, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      const matches = socket.events.filter((item) => item.event === event).map((item) => item.payload);
+
+      if (matches.length >= count) {
+        clearInterval(timer);
+        resolve(matches);
+      } else if (Date.now() - started > timeoutMs) {
+        clearInterval(timer);
+        reject(new Error(`Timed out waiting for ${count} × ${event} (got ${matches.length})`));
+      }
+    }, 20);
+  });
+}
+
+// Lets in-flight socket events arrive before asserting that something was NOT received.
+export const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const get = (path, options) => api('GET', path, options);
 export const post = (path, options) => api('POST', path, options);

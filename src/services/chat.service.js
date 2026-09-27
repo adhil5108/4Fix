@@ -1,6 +1,8 @@
+import Booking from '../models/Booking.js';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
-import { emitToBooking } from '../realtime/socket.js';
+import { USER_ROLES } from '../models/User.js';
+import { emitToBooking, emitToInbox, providerInbox, requestInbox } from '../realtime/socket.js';
 import { ApiError } from '../utils/ApiError.js';
 import { requiredText, stringList } from '../utils/text.js';
 import { findBookingForUser } from './booking.service.js';
@@ -25,6 +27,24 @@ function countUnread(conversation, user) {
     conversationId: conversation.id,
     ...fromOtherSide(user),
     readAt: null,
+  });
+}
+
+// The inbox room of one side of a booking (see realtime/socket.js).
+function inboxOf(booking, role) {
+  return role === USER_ROLES.PROVIDER ? providerInbox(booking.providerId) : requestInbox(booking.requestId);
+}
+
+const otherRole = (role) => (role === USER_ROLES.PROVIDER ? USER_ROLES.CUSTOMER : USER_ROLES.PROVIDER);
+
+// `unreadCount` is always the absolute, persisted count (never a "+1"), so a client
+// that receives the same event twice — or after a reconnect — can't double-count.
+function emitUnread(booking, conversation, role, unreadCount, message = null) {
+  emitToInbox(inboxOf(booking, role), 'chat:unread', {
+    bookingId: String(booking.id),
+    conversationId: String(conversation.id),
+    unreadCount,
+    message,
   });
 }
 
@@ -141,9 +161,74 @@ export async function sendMessage(user, bookingId, input) {
   // senderRole against its own side instead.
   const { isMine: _isMine, ...broadcastMessage } = toMessage(message, user);
   emitToBooking(bookingId, 'message:new', broadcastMessage);
+  await notifyRecipient(booking, conversation, message);
 
   return {
     message: toMessage(message, user),
+  };
+}
+
+// Tells the other side (wherever they are in the app) their unread count for this
+// conversation, with just enough about the new message for an in-app notification.
+// If they are looking at the conversation, their client marks it read right away,
+// which pushes the count back to 0.
+async function notifyRecipient(booking, conversation, message) {
+  const recipientRole = otherRole(message.senderRole);
+  const [unreadCount, populated] = await Promise.all([
+    countUnread(conversation, { role: recipientRole }),
+    Conversation.findById(conversation.id).populate(CONVERSATION_POPULATE),
+  ]);
+  const summary = toConversation(populated);
+  const sender = message.senderRole === USER_ROLES.PROVIDER ? summary.provider : summary.customer;
+
+  emitUnread(booking, conversation, recipientRole, unreadCount, {
+    id: message.id,
+    senderRole: message.senderRole,
+    senderName: sender?.name ?? null,
+    createdAt: message.createdAt,
+  });
+}
+
+// Unread counts across every conversation this participant can access: all of a
+// provider's own jobs, or the one job of an anonymous customer's request. Used on page
+// load and after a socket reconnect so counts survive refreshes.
+export async function getUnreadSummary(user) {
+  const bookingFilter =
+    user.role === USER_ROLES.PROVIDER ? { providerId: user.id } : { requestId: user.requestId };
+  const bookingIds = await Booking.find(bookingFilter).distinct('_id');
+  const conversations = await Conversation.find({ bookingId: { $in: bookingIds } }).select('_id bookingId');
+
+  if (conversations.length === 0) {
+    return { total: 0, conversations: [] };
+  }
+
+  const counts = await Message.aggregate([
+    {
+      $match: {
+        conversationId: { $in: conversations.map((conversation) => conversation._id) },
+        ...fromOtherSide(user),
+        readAt: null,
+      },
+    },
+    { $group: { _id: '$conversationId', unreadCount: { $sum: 1 }, lastMessageAt: { $max: '$createdAt' } } },
+  ]);
+  const byConversation = new Map(counts.map((row) => [String(row._id), row]));
+
+  const items = conversations
+    .filter((conversation) => byConversation.has(conversation.id))
+    .map((conversation) => {
+      const row = byConversation.get(conversation.id);
+      return {
+        bookingId: String(conversation.bookingId),
+        conversationId: conversation.id,
+        unreadCount: row.unreadCount,
+        lastMessageAt: row.lastMessageAt,
+      };
+    });
+
+  return {
+    total: items.reduce((sum, item) => sum + item.unreadCount, 0),
+    conversations: items,
   };
 }
 
@@ -163,6 +248,8 @@ export async function markMessagesRead(user, bookingId) {
 
   if (result.modifiedCount > 0) {
     emitToBooking(bookingId, 'messages:read', { bookingId, readBy: user.role });
+    // Clears this conversation's badge in the reader's other tabs/devices too.
+    emitUnread(booking, conversation, user.role, 0);
   }
 
   return { updatedCount: result.modifiedCount };

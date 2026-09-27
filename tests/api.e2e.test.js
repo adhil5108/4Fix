@@ -3,16 +3,19 @@ import crypto from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 import {
   api,
+  connectSocket,
   createRequest,
   del,
   get,
   patch,
   post,
   requestPayload,
+  settle,
   SHOP_LOCATION,
   signupProvider,
   startTestServer,
   stopTestServer,
+  waitForEvents,
 } from './helpers.js';
 import cloudinary from '../src/config/cloudinary.js';
 
@@ -802,6 +805,257 @@ describe('chat', () => {
     const other = await get(path('/messages'), { requestToken: ctx.requestB.token });
     assert.equal(other.status, 403);
     assert.equal(JSON.stringify(other.body).includes('gate'), false);
+  });
+});
+
+describe('unread chat notifications', () => {
+  const sockets = [];
+  const open = async (auth) => {
+    const socket = await connectSocket(auth);
+    sockets.push(socket);
+    return socket;
+  };
+  const unreadEvents = (socket) =>
+    socket.events.filter((item) => item.event === 'chat:unread').map((item) => item.payload);
+  const say = (bookingId, auth, message) =>
+    post(`/api/bookings/${bookingId}/messages`, { ...auth, body: { message } });
+  const markRead = (bookingId, auth) => post(`/api/bookings/${bookingId}/messages/read`, auth);
+  const summary = (auth) => get('/api/bookings/unread', auth);
+  const join = (socket, bookingId) =>
+    new Promise((resolve) => socket.emit('conversation:join', { bookingId }, resolve));
+
+  // A provider with two live jobs (two customers), plus an unrelated provider/customer.
+  before(async () => {
+    ctx.ravi = await signupProvider('Ravi Tech', '9876500031');
+    ctx.jobOne = await runFullFlow({ provider: ctx.ravi, complete: false });
+    ctx.jobTwo = await runFullFlow({
+      provider: ctx.ravi,
+      complete: false,
+      body: requestPayload(ctx.plumbing.id, {
+        issueKey: 'LEAKING_TAP',
+        customerDetails: { name: 'Bina Customer', phone: '98765 43211' },
+      }),
+    });
+    ctx.otherJob = await runFullFlow({ provider: ctx.provider2, complete: false });
+  });
+
+  after(() => {
+    for (const socket of sockets) {
+      socket.disconnect();
+    }
+  });
+
+  const ravi = () => ({ token: ctx.ravi.token });
+  const customerOne = () => ({ requestToken: ctx.jobOne.token });
+  const customerTwo = () => ({ requestToken: ctx.jobTwo.token });
+
+  it('starts with no unread messages', async () => {
+    const result = await summary(ravi());
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, { total: 0, conversations: [] });
+    assert.deepEqual((await summary(customerOne())).body, { total: 0, conversations: [] });
+  });
+
+  it('customer → provider: the provider gets unread state outside the conversation', async () => {
+    // Connected, but NOT joined to the conversation (e.g. on the dashboard).
+    const providerSocket = await open({ token: ctx.ravi.token });
+    const customerSocket = await open({ requestToken: ctx.jobOne.token });
+
+    assert.equal((await say(ctx.jobOne.bookingId, customerOne(), 'Is 5pm okay?')).status, 201);
+
+    const [event] = await waitForEvents(providerSocket, 'chat:unread');
+    assert.equal(event.bookingId, ctx.jobOne.bookingId);
+    assert.equal(event.unreadCount, 1);
+    assert.equal(event.message.senderRole, 'CUSTOMER');
+    assert.equal(event.message.senderName, 'Asha Customer');
+    assert.ok(event.message.id);
+    // The notification carries no message text and no phone number.
+    assert.equal(JSON.stringify(event).includes('5pm'), false);
+    assert.equal(JSON.stringify(event).includes('98765'), false);
+
+    const result = await summary(ravi());
+    assert.equal(result.body.total, 1);
+    assert.deepEqual(
+      result.body.conversations.map(({ bookingId, unreadCount }) => ({ bookingId, unreadCount })),
+      [{ bookingId: ctx.jobOne.bookingId, unreadCount: 1 }],
+    );
+
+    // The sender's own message is never unread for them.
+    await settle();
+    assert.equal(unreadEvents(customerSocket).length, 0);
+    assert.equal((await summary(customerOne())).body.total, 0);
+  });
+
+  it('provider → customer: the customer gets unread state with their request token', async () => {
+    const customerSocket = await open({ requestToken: ctx.jobOne.token });
+
+    assert.equal((await say(ctx.jobOne.bookingId, ravi(), 'Yes, see you at 5.')).status, 201);
+
+    const [event] = await waitForEvents(customerSocket, 'chat:unread');
+    assert.equal(event.bookingId, ctx.jobOne.bookingId);
+    assert.equal(event.unreadCount, 1);
+    assert.equal(event.message.senderRole, 'PROVIDER');
+    assert.equal(event.message.senderName, 'Ravi Tech');
+
+    const result = await summary(customerOne());
+    assert.equal(result.body.total, 1);
+    assert.equal(result.body.conversations[0].bookingId, ctx.jobOne.bookingId);
+  });
+
+  it('multiple messages produce the expected absolute unread count', async () => {
+    const providerSocket = await open({ token: ctx.ravi.token });
+
+    for (const text of ['One more thing', 'The gate code is 42', 'Thanks!']) {
+      assert.equal((await say(ctx.jobOne.bookingId, customerOne(), text)).status, 201);
+    }
+
+    const events = await waitForEvents(providerSocket, 'chat:unread', 3);
+    assert.deepEqual(events.map((event) => event.unreadCount), [2, 3, 4]);
+    assert.equal(new Set(events.map((event) => event.message.id)).size, 3);
+    assert.equal((await summary(ravi())).body.total, 4);
+  });
+
+  it('reading one conversation does not clear another', async () => {
+    assert.equal((await say(ctx.jobTwo.bookingId, customerTwo(), 'Tap is still dripping')).status, 201);
+    assert.equal((await say(ctx.jobTwo.bookingId, customerTwo(), 'Please bring a washer')).status, 201);
+
+    const before = await summary(ravi());
+    const counts = Object.fromEntries(before.body.conversations.map((item) => [item.bookingId, item.unreadCount]));
+    assert.deepEqual(counts, { [ctx.jobOne.bookingId]: 4, [ctx.jobTwo.bookingId]: 2 });
+    assert.equal(before.body.total, 6);
+
+    const providerSocket = await open({ token: ctx.ravi.token });
+    assert.equal((await markRead(ctx.jobOne.bookingId, ravi())).body.updatedCount, 4);
+    const [cleared] = await waitForEvents(providerSocket, 'chat:unread');
+    assert.equal(cleared.bookingId, ctx.jobOne.bookingId);
+
+    const after = await summary(ravi());
+    assert.deepEqual(
+      after.body.conversations.map(({ bookingId, unreadCount }) => ({ bookingId, unreadCount })),
+      [{ bookingId: ctx.jobTwo.bookingId, unreadCount: 2 }],
+    );
+    assert.equal(after.body.total, 2);
+
+    // Each customer only ever sees their own request's conversation.
+    assert.deepEqual((await summary(customerTwo())).body, { total: 0, conversations: [] });
+  });
+
+  it('opening a conversation marks it read, pushes the cleared count and the read receipt', async () => {
+    const customerSocket = await open({ requestToken: ctx.jobOne.token });
+    const providerSocket = await open({ token: ctx.ravi.token });
+    // The provider is viewing the chat, so the existing in-room read receipt applies.
+    assert.equal((await join(providerSocket, ctx.jobOne.bookingId)).ok, true);
+
+    const read = await markRead(ctx.jobOne.bookingId, customerOne());
+    assert.equal(read.status, 200);
+    assert.equal(read.body.updatedCount, 1);
+
+    const [cleared] = await waitForEvents(customerSocket, 'chat:unread');
+    assert.deepEqual(cleared, {
+      bookingId: ctx.jobOne.bookingId,
+      conversationId: cleared.conversationId,
+      unreadCount: 0,
+      message: null,
+    });
+    const [receipt] = await waitForEvents(providerSocket, 'messages:read');
+    assert.deepEqual(receipt, { bookingId: ctx.jobOne.bookingId, readBy: 'CUSTOMER' });
+    assert.equal((await summary(customerOne())).body.total, 0);
+
+    // Reading their side leaves the provider's own unread (job two) untouched.
+    assert.equal((await summary(ravi())).body.total, 2);
+  });
+
+  it('unread state survives a disconnect, refresh and reconnect', async () => {
+    const first = await open({ requestToken: ctx.jobOne.token });
+    first.disconnect();
+
+    // Messages arrive while the customer has no connection at all.
+    assert.equal((await say(ctx.jobOne.bookingId, ravi(), 'Running 10 minutes late')).status, 201);
+
+    const afterRefresh = await summary(customerOne());
+    assert.equal(afterRefresh.body.total, 1);
+
+    const reconnected = await open({ requestToken: ctx.jobOne.token });
+    assert.equal((await say(ctx.jobOne.bookingId, ravi(), 'Almost there')).status, 201);
+    const [event] = await waitForEvents(reconnected, 'chat:unread');
+    assert.equal(event.unreadCount, 2);
+    assert.equal((await summary(customerOne())).body.total, 2);
+
+    assert.equal((await markRead(ctx.jobOne.bookingId, customerOne())).body.updatedCount, 2);
+    assert.equal((await summary(customerOne())).body.total, 0);
+  });
+
+  it('repeated delivery never double-counts: counts are absolute and reads idempotent', async () => {
+    // Two tabs of the same provider; one joins the room twice (e.g. a reconnect re-join).
+    const tabA = await open({ token: ctx.ravi.token });
+    const tabB = await open({ token: ctx.ravi.token });
+    assert.equal((await join(tabB, ctx.jobTwo.bookingId)).ok, true);
+    assert.equal((await join(tabB, ctx.jobTwo.bookingId)).ok, true);
+
+    assert.equal((await say(ctx.jobTwo.bookingId, customerTwo(), 'Are you coming today?')).status, 201);
+
+    const [eventA] = await waitForEvents(tabA, 'chat:unread');
+    const [eventB] = await waitForEvents(tabB, 'chat:unread');
+    await settle();
+    // Same message, same absolute count, in both tabs — applying it twice changes nothing.
+    assert.deepEqual(eventA, eventB);
+    assert.equal(eventA.unreadCount, 3);
+    assert.equal(tabB.events.filter((item) => item.event === 'message:new').length, 1);
+    assert.equal(unreadEvents(tabB).length, 1);
+
+    assert.equal((await markRead(ctx.jobTwo.bookingId, ravi())).body.updatedCount, 3);
+    const repeated = await markRead(ctx.jobTwo.bookingId, ravi());
+    assert.equal(repeated.status, 200);
+    assert.equal(repeated.body.updatedCount, 0);
+    await settle();
+    // One "cleared" event for the real read, none for the no-op repeat.
+    assert.deepEqual(unreadEvents(tabA).map((event) => event.unreadCount), [3, 0]);
+    assert.equal((await summary(ravi())).body.total, 0);
+  });
+
+  it("never exposes or changes another participant's unread state", async () => {
+    const outsider = await open({ token: ctx.provider2.token });
+    const otherCustomer = await open({ requestToken: ctx.otherJob.token });
+
+    assert.equal((await say(ctx.jobTwo.bookingId, customerTwo(), 'Hello again')).status, 201);
+    await settle();
+    assert.equal(unreadEvents(outsider).length, 0);
+    assert.equal(unreadEvents(otherCustomer).length, 0);
+
+    // Another provider / another customer: the summary lists only their own conversations…
+    const outsiderSummary = await summary({ token: ctx.provider2.token });
+    assert.equal(outsiderSummary.status, 200);
+    assert.equal(
+      outsiderSummary.body.conversations.some((item) => item.bookingId === ctx.jobTwo.bookingId),
+      false,
+    );
+    assert.deepEqual((await summary({ requestToken: ctx.otherJob.token })).body, { total: 0, conversations: [] });
+
+    // …and they can neither mark this conversation read nor join its room.
+    assert.equal((await markRead(ctx.jobTwo.bookingId, { token: ctx.provider2.token })).status, 403);
+    assert.equal((await markRead(ctx.jobTwo.bookingId, { requestToken: ctx.otherJob.token })).status, 403);
+    assert.equal((await join(outsider, ctx.jobTwo.bookingId)).ok, false);
+    assert.equal((await join(otherCustomer, ctx.jobTwo.bookingId)).ok, false);
+    assert.equal((await summary(ravi())).body.total, 1);
+
+    // No credentials, or a forged token: refused.
+    assert.equal((await summary({})).status, 401);
+    assert.equal((await summary({ requestToken: 'x'.repeat(43) })).status, 401);
+  });
+
+  it('admin gets no unread behaviour, even while watching the conversation', async () => {
+    const adminSocket = await open({ token: ctx.admin.token });
+    assert.equal((await join(adminSocket, ctx.jobTwo.bookingId)).ok, true);
+
+    assert.equal((await summary({ token: ctx.admin.token })).status, 403);
+    assert.equal((await say(ctx.jobTwo.bookingId, customerTwo(), 'Admin should not be pinged')).status, 201);
+
+    await waitForEvents(adminSocket, 'message:new');
+    await settle();
+    assert.equal(unreadEvents(adminSocket).length, 0);
+    // Admin's read-only view never marks anything read on anyone's behalf.
+    assert.equal((await markRead(ctx.jobTwo.bookingId, { token: ctx.admin.token })).status, 403);
+    assert.equal((await summary(ravi())).body.total, 2);
   });
 });
 

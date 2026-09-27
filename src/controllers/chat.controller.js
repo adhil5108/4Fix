@@ -1,5 +1,6 @@
 import {
   getConversation as getConversationService,
+  getUnreadSummary as getUnreadSummaryService,
   listMessages as listMessagesService,
   markMessagesRead as markMessagesReadService,
   openConversation as openConversationService,
@@ -32,6 +33,12 @@ export async function sendMessage(req, res) {
 
 export async function markMessagesRead(req, res) {
   const result = await markMessagesReadService(req.user, req.params.bookingId);
+
+  res.status(200).json(result);
+}
+
+export async function getUnreadSummary(req, res) {
+  const result = await getUnreadSummaryService(req.user);
 
   res.status(200).json(result);
 }

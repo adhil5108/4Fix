@@ -1,11 +1,36 @@
 import { Server } from 'socket.io';
 import { resolveRequestOwner, resolveUserFromJwt } from '../middleware/authenticate.js';
+import { USER_ROLES } from '../models/User.js';
 import { findBookingForUser } from '../services/booking.service.js';
 
 let io = null;
 
 function roomName(bookingId) {
   return `booking:${bookingId}`;
+}
+
+// A participant's personal "inbox" room, joined automatically on connect, so unread
+// updates reach them wherever they are in the app — not only inside the conversation.
+// Providers are addressed by account, the anonymous customer by their request. Admin
+// has no inbox: they read chats but are never a recipient.
+export function providerInbox(providerId) {
+  return `inbox:provider:${providerId}`;
+}
+
+export function requestInbox(requestId) {
+  return `inbox:request:${requestId}`;
+}
+
+function inboxFor(user) {
+  if (user.role === USER_ROLES.PROVIDER) {
+    return providerInbox(user.id);
+  }
+
+  if (user.role === USER_ROLES.CUSTOMER && user.requestId) {
+    return requestInbox(user.requestId);
+  }
+
+  return null;
 }
 
 // Same credentials the REST API uses, read from the handshake instead of headers — a
@@ -58,6 +83,12 @@ export function initSocket(httpServer) {
 
   io.use(authenticateSocket);
   io.on('connection', (socket) => {
+    const inbox = inboxFor(socket.user);
+
+    if (inbox) {
+      socket.join(inbox);
+    }
+
     registerConversationEvents(socket);
   });
 
@@ -68,6 +99,10 @@ export function initSocket(httpServer) {
 // in an HTTP server) so chat.service.js can call this unconditionally.
 export function emitToBooking(bookingId, event, payload) {
   io?.to(roomName(bookingId)).emit(event, payload);
+}
+
+export function emitToInbox(inbox, event, payload) {
+  io?.to(inbox).emit(event, payload);
 }
 
 export function closeSocket() {
