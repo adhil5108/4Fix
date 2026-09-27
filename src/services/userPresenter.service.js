@@ -19,8 +19,8 @@ export function toSafeUser(user) {
     // Own profile and admin views only — never part of the public provider profile.
     safeUser.shopLocation = user.shopLocation
       ? {
-          latitude: user.shopLocation.latitude,
-          longitude: user.shopLocation.longitude,
+          latitude: user.shopLocation.latitude ?? null,
+          longitude: user.shopLocation.longitude ?? null,
           address: user.shopLocation.address ?? null,
         }
       : null;

@@ -74,7 +74,8 @@ export function dateOnly(daysFromNow) {
   return date.toISOString().slice(0, 10);
 }
 
-export const SHOP_LOCATION = { latitude: 12.9352, longitude: 77.6245, address: 'Koramangala 5th Block' };
+// Provider signup is address-only: the typed shop address is the shop location.
+export const SHOP_LOCATION = { address: 'Koramangala 5th Block' };
 
 // Providers are the only accounts in V1.
 export async function signupProvider(name, phoneNumber, { password = 'Password123', shopLocation = SHOP_LOCATION } = {}) {

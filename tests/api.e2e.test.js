@@ -394,15 +394,16 @@ describe('provider signup and profile', () => {
     ...overrides,
   });
 
-  it('requires a valid shop location', async () => {
+  it('requires a shop address at signup', async () => {
     const cases = [
       base({ shopLocation: undefined }),
+      base({ shopLocation: null }),
       base({ shopLocation: 'Koramangala' }),
-      base({ shopLocation: { latitude: 91, longitude: 77.6 } }),
-      base({ shopLocation: { latitude: -90.5, longitude: 77.6 } }),
-      base({ shopLocation: { latitude: 12.9, longitude: 181 } }),
-      base({ shopLocation: { latitude: 12.9, longitude: -180.01 } }),
-      base({ shopLocation: { latitude: '12.9', longitude: 77.6 } }),
+      base({ shopLocation: {} }),
+      base({ shopLocation: { address: '   ' } }),
+      base({ shopLocation: { address: 'MG' } }),
+      base({ shopLocation: { address: 'x'.repeat(241) } }),
+      base({ shopLocation: { address: 12345 } }),
     ];
 
     for (const body of cases) {
@@ -412,21 +413,50 @@ describe('provider signup and profile', () => {
     }
   });
 
-  it('signs up with a shop location stored on the profile, and can log in', async () => {
+  it('signs up with only a typed shop address — no coordinates required or invented', async () => {
     const created = await post('/api/auth/provider/signup', {
-      body: base({ shopLocation: { latitude: -90, longitude: 180, address: '  Corner shop  ' } }),
+      body: base({ shopLocation: { address: '  Cool Air Services, MG Road  ' } }),
     });
     assert.equal(created.status, 201);
     assert.equal(created.body.user.role, 'PROVIDER');
-    assert.deepEqual(created.body.user.shopLocation, { latitude: -90, longitude: 180, address: 'Corner shop' });
+    assert.deepEqual(created.body.user.shopLocation, {
+      latitude: null,
+      longitude: null,
+      address: 'Cool Air Services, MG Road',
+    });
+
+    // Coordinates sent at signup are ignored: registration takes the address only.
+    const withCoords = await post('/api/auth/provider/signup', {
+      body: base({ phoneNumber: '9876501002', shopLocation: { address: 'Corner shop, Kochi', latitude: 9.9, longitude: 76.2 } }),
+    });
+    assert.equal(withCoords.status, 201);
+    assert.equal(withCoords.body.user.shopLocation.latitude, null);
 
     const login = await post('/api/auth/login', { body: { username: '9876501001', password: 'Password123' } });
     assert.equal(login.status, 200);
     const me = await get('/api/auth/me', { token: login.body.accessToken });
-    assert.deepEqual(me.body.user.shopLocation, { latitude: -90, longitude: 180, address: 'Corner shop' });
+    assert.equal(me.body.user.shopLocation.address, 'Cool Air Services, MG Road');
+
+    const { default: User } = await import('../src/models/User.js');
+    const stored = await User.findById(created.body.user.id);
+    assert.equal(stored.shopLocation.address, 'Cool Air Services, MG Road');
+    assert.equal(stored.shopLocation.latitude, null);
+    assert.equal(stored.shopLocation.longitude, null);
 
     const duplicate = await post('/api/auth/provider/signup', { body: base() });
     assert.equal(duplicate.status, 409);
+  });
+
+  it('profile editing still requires valid coordinates', async () => {
+    for (const shopLocation of [
+      { address: 'Address only' },
+      { latitude: 91, longitude: 77.6 },
+      { latitude: 12.9, longitude: -180.01 },
+      { latitude: '12.9', longitude: 77.6 },
+    ]) {
+      const result = await patch('/api/users/me', { token: ctx.provider1.token, body: { shopLocation } });
+      assert.equal(result.status, 400, JSON.stringify(shopLocation));
+    }
   });
 
   it('updates the shop location from the profile, with validation', async () => {

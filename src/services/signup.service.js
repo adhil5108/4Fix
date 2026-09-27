@@ -1,7 +1,7 @@
 import User, { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
 import { normalizePhoneNumber } from '../utils/normalizePhone.js';
-import { validateShopLocation } from '../utils/shopLocation.js';
+import { validateSignupShopLocation } from '../utils/shopLocation.js';
 import { hashPassword } from './password.service.js';
 import { createAccessToken } from './token.service.js';
 import { toSafeUser } from './userPresenter.service.js';
@@ -29,7 +29,7 @@ function validateSignupInput({ name, phoneNumber, password, confirmPassword } = 
 // Only providers have accounts in V1; customers use 4Fix anonymously.
 export async function signupProvider(input) {
   validateSignupInput(input);
-  const shopLocation = validateShopLocation(input?.shopLocation);
+  const shopLocation = validateSignupShopLocation(input?.shopLocation);
 
   const username = normalizePhoneNumber(input.phoneNumber);
   const existingUser = await User.exists({ username });
