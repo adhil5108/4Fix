@@ -30,12 +30,20 @@ const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex'
 
 async function seedServices() {
   const { default: Service } = await import('../src/models/Service.js');
+  const { default: Category } = await import('../src/models/Category.js');
+
+  const [ac, plumbingCategory, legacy] = await Category.create([
+    { name: 'AC' },
+    { name: 'Plumbing' },
+    { name: 'Legacy' },
+  ]);
+  ctx.categories = { ac, plumbing: plumbingCategory, legacy };
 
   const [acRepair, plumbing] = await Service.create([
     {
       name: 'AC Repair',
       description: 'Diagnose and repair air conditioner faults.',
-      category: 'AC',
+      categoryId: ac._id,
       startingPrice: 499,
       isPopular: true,
       issues: [
@@ -47,7 +55,7 @@ async function seedServices() {
     {
       name: 'Plumbing',
       description: 'Leaks, blocked drains and fittings.',
-      category: 'PLUMBING',
+      categoryId: plumbingCategory._id,
       startingPrice: 299,
       isPopular: false,
       issues: [{ key: 'LEAKING_TAP', label: 'Leaking tap', isActive: true }],
@@ -55,7 +63,7 @@ async function seedServices() {
     {
       name: 'Retired Service',
       description: 'No longer offered.',
-      category: 'LEGACY',
+      categoryId: legacy._id,
       isActive: false,
     },
   ]);
@@ -135,9 +143,10 @@ describe('services', () => {
   });
 
   it('filters by category and popularity', async () => {
-    const byCategory = await get('/api/services?category=plumbing');
+    const byCategory = await get(`/api/services?category=${ctx.categories.plumbing.id}`);
     assert.equal(byCategory.body.services.length, 1);
-    assert.equal(byCategory.body.services[0].category, 'PLUMBING');
+    assert.equal(byCategory.body.services[0].category.name, 'Plumbing');
+    assert.equal(byCategory.body.services[0].categoryId, ctx.categories.plumbing.id);
 
     const popular = await get('/api/services?popular=true');
     assert.deepEqual(
@@ -394,6 +403,7 @@ describe('provider signup and profile', () => {
     password: 'Password123',
     confirmPassword: 'Password123',
     shopLocation: SHOP_LOCATION,
+    categories: [ctx.categories.ac.id],
     ...overrides,
   });
 
@@ -467,13 +477,16 @@ describe('provider signup and profile', () => {
       token: ctx.provider1.token,
       body: {
         bio: 'AC specialist',
-        serviceCategories: ['ac'],
+        categories: [ctx.categories.ac.id, ctx.categories.plumbing.id, ctx.categories.legacy.id],
         experienceYears: 6,
         shopLocation: { latitude: 12.95, longitude: 77.6, address: 'MG Road' },
       },
     });
     assert.equal(updated.status, 200);
-    assert.deepEqual(updated.body.user.serviceCategories, ['AC']);
+    assert.deepEqual(
+      updated.body.user.categories.map((category) => category.name),
+      ['AC', 'Plumbing', 'Legacy'],
+    );
     assert.deepEqual(updated.body.user.shopLocation, { latitude: 12.95, longitude: 77.6, address: 'MG Road' });
 
     const invalid = await patch('/api/users/me', {
@@ -1675,12 +1688,14 @@ describe('admin', () => {
   });
 
   it('admin can create, list, fetch and update a service', async () => {
+    const pest = await post('/api/admin/categories', { token: ctx.admin.token, body: { name: 'Pest' } });
+    assert.equal(pest.status, 201);
     const created = await post('/api/admin/services', {
       token: ctx.admin.token,
       body: {
         name: 'Pest Control',
         description: 'Home pest control treatment.',
-        category: 'pest',
+        categoryId: pest.body.category.id,
         startingPrice: 799,
         issues: [
           { key: 'ants', label: 'Ants' },
@@ -1690,7 +1705,7 @@ describe('admin', () => {
     });
 
     assert.equal(created.status, 201);
-    assert.equal(created.body.service.category, 'PEST');
+    assert.equal(created.body.service.category.name, 'Pest');
     assert.deepEqual(created.body.service.issues.map((issue) => issue.key), ['ANTS', 'COCKROACHES']);
     const serviceId = created.body.service.id;
 
@@ -1929,5 +1944,402 @@ describe('customer service location', () => {
     assert.equal(jobs.body.jobs.find((item) => item.id === flow.requestId).location, null);
     const booking = await get(`/api/bookings/${flow.bookingId}`, { requestToken: flow.token });
     assert.equal(booking.body.booking.request.location, null);
+  });
+});
+
+describe('categories', () => {
+  it('admin creates, updates and lists categories; non-admins cannot', async () => {
+    for (const [method, path] of [
+      ['GET', '/api/admin/categories'],
+      ['POST', '/api/admin/categories'],
+      ['PATCH', `/api/admin/categories/${ctx.categories.ac.id}`],
+      ['DELETE', `/api/admin/categories/${ctx.categories.ac.id}`],
+    ]) {
+      assert.equal((await api(method, path)).status, 401, `${method} ${path}`);
+      assert.equal((await api(method, path, { token: ctx.provider1.token })).status, 403, `${method} ${path}`);
+    }
+
+    const created = await post('/api/admin/categories', {
+      token: ctx.admin.token,
+      body: { name: '  Electrical ', description: 'Wiring, fans and switches.' },
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.category.name, 'Electrical');
+    assert.equal(created.body.category.isActive, true);
+    ctx.categories.electrical = created.body.category;
+
+    const duplicate = await post('/api/admin/categories', { token: ctx.admin.token, body: { name: 'electrical' } });
+    assert.equal(duplicate.status, 409);
+    assert.equal(duplicate.body.error.code, 'CATEGORY_EXISTS');
+    assert.equal((await post('/api/admin/categories', { token: ctx.admin.token, body: { name: 'x' } })).status, 400);
+
+    const updated = await patch(`/api/admin/categories/${created.body.category.id}`, {
+      token: ctx.admin.token,
+      body: { description: 'Wiring, fans, switches and sockets.' },
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.category.description, 'Wiring, fans, switches and sockets.');
+
+    const listed = await get('/api/admin/categories', { token: ctx.admin.token });
+    const ac = listed.body.categories.find((category) => category.id === ctx.categories.ac.id);
+    assert.ok(ac.serviceCount >= 1);
+  });
+
+  it('customers see only active categories, and services by category', async () => {
+    const hidden = await post('/api/admin/categories', {
+      token: ctx.admin.token,
+      body: { name: 'Hidden Category', isActive: false },
+    });
+    ctx.categories.hidden = hidden.body.category;
+    const service = await post('/api/admin/services', {
+      token: ctx.admin.token,
+      body: { name: 'Hidden Service', description: 'Not offered right now.', categoryId: hidden.body.category.id },
+    });
+    assert.equal(service.status, 201);
+
+    const list = await get('/api/categories');
+    assert.equal(list.status, 200);
+    const names = list.body.categories.map((category) => category.name);
+    assert.ok(names.includes('AC') && names.includes('Plumbing'));
+    assert.equal(names.includes('Hidden Category'), false);
+    assert.equal('isActive' in list.body.categories[0], false);
+    assert.equal(list.body.categories.find((category) => category.name === 'AC').serviceCount, 1);
+
+    const acServices = await get(`/api/categories/${ctx.categories.ac.id}/services`);
+    assert.equal(acServices.status, 200);
+    assert.equal(acServices.body.category.name, 'AC');
+    assert.deepEqual(acServices.body.services.map((item) => item.name), ['AC Repair']);
+    assert.equal(acServices.body.services[0].category.name, 'AC');
+
+    // An inactive category, its services and booking them are all unavailable publicly.
+    assert.equal((await get(`/api/categories/${hidden.body.category.id}/services`)).status, 404);
+    assert.equal((await get(`/api/services/${service.body.service.id}`)).status, 404);
+    assert.equal((await get('/api/services')).body.services.some((item) => item.name === 'Hidden Service'), false);
+    assert.deepEqual((await get(`/api/services?category=${hidden.body.category.id}`)).body.services, []);
+    assert.equal((await post('/api/requests', { body: requestPayload(service.body.service.id) })).status, 404);
+
+    // Enabling it makes everything visible again.
+    await patch(`/api/admin/categories/${hidden.body.category.id}`, { token: ctx.admin.token, body: { isActive: true } });
+    assert.equal((await get(`/api/services/${service.body.service.id}`)).status, 200);
+    await patch(`/api/admin/categories/${hidden.body.category.id}`, { token: ctx.admin.token, body: { isActive: false } });
+
+    const empty = await get(`/api/categories/${ctx.categories.electrical.id}/services`);
+    assert.equal(empty.status, 200);
+    assert.deepEqual(empty.body.services, []);
+  });
+
+  it('every service belongs to exactly one existing category, stored by reference', async () => {
+    const base = { name: 'Fan Repair', description: 'Ceiling and table fans.' };
+    assert.equal((await post('/api/admin/services', { token: ctx.admin.token, body: base })).status, 400);
+    assert.equal(
+      (await post('/api/admin/services', {
+        token: ctx.admin.token,
+        body: { ...base, categoryId: '64b000000000000000000000' },
+      })).status,
+      400,
+    );
+    assert.equal(
+      (await post('/api/admin/services', { token: ctx.admin.token, body: { ...base, category: 'ELECTRICAL' } })).status,
+      400,
+    );
+
+    const created = await post('/api/admin/services', {
+      token: ctx.admin.token,
+      body: { ...base, categoryId: ctx.categories.electrical.id },
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.service.categoryId, ctx.categories.electrical.id);
+    assert.equal(created.body.service.category.name, 'Electrical');
+
+    const { default: Service } = await import('../src/models/Service.js');
+    const stored = await Service.findById(created.body.service.id).lean();
+    assert.equal(String(stored.categoryId), ctx.categories.electrical.id);
+    assert.equal('category' in stored, false, 'no free-text category name is stored');
+
+    const cleared = await patch(`/api/admin/services/${created.body.service.id}`, {
+      token: ctx.admin.token,
+      body: { categoryId: null },
+    });
+    assert.equal(cleared.status, 400, 'a service cannot be left without a category');
+  });
+
+  it('a category with services cannot be deleted; an empty one can', async () => {
+    const inUse = await del(`/api/admin/categories/${ctx.categories.ac.id}`, { token: ctx.admin.token });
+    assert.equal(inUse.status, 409);
+    assert.equal(inUse.body.error.code, 'CATEGORY_IN_USE');
+
+    const temp = await post('/api/admin/categories', { token: ctx.admin.token, body: { name: 'Temporary' } });
+    const provider = await signupProvider('Temp Category Provider', '9876531001', {
+      categories: [temp.body.category.id, ctx.categories.ac.id],
+    });
+    const removed = await del(`/api/admin/categories/${temp.body.category.id}`, { token: ctx.admin.token });
+    assert.equal(removed.status, 200);
+    const me = await get('/api/auth/me', { token: provider.token });
+    assert.deepEqual(me.body.user.categories.map((category) => category.name), ['AC']);
+  });
+
+  it('existing services and providers without categories keep working', async () => {
+    const { default: Service } = await import('../src/models/Service.js');
+    const { default: User } = await import('../src/models/User.js');
+    const { hashPassword } = await import('../src/services/password.service.js');
+
+    // A service stored before categories existed: free-text category, no categoryId.
+    const { insertedId } = await Service.collection.insertOne({
+      name: 'Old Carpentry',
+      description: 'Doors and furniture.',
+      category: 'CARPENTRY',
+      isActive: true,
+      issues: [],
+    });
+    const detail = await get(`/api/services/${insertedId}`);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.service.category, null);
+    assert.ok((await get('/api/services')).body.services.some((item) => item.id === String(insertedId)));
+    const adminList = await get('/api/admin/services?pageSize=100', { token: ctx.admin.token });
+    assert.ok(adminList.body.services.some((item) => item.id === String(insertedId)));
+    await Service.deleteOne({ _id: insertedId });
+
+    // A provider registered before categories: empty list, sees no requests, can add some.
+    await User.create({
+      name: 'Old Provider',
+      username: '9876531099',
+      passwordHash: await hashPassword('Password123'),
+      role: 'PROVIDER',
+    });
+    const login = await post('/api/auth/login', { body: { username: '9876531099', password: 'Password123' } });
+    assert.equal(login.status, 200);
+    assert.deepEqual(login.body.user.categories, []);
+    const feed = await get('/api/provider/requests', { token: login.body.accessToken });
+    assert.equal(feed.status, 200);
+    assert.deepEqual(feed.body.requests, []);
+    assert.equal(feed.body.needsCategories, true);
+
+    const updated = await patch('/api/users/me', {
+      token: login.body.accessToken,
+      body: { categories: [ctx.categories.ac.id] },
+    });
+    assert.equal(updated.status, 200);
+    assert.deepEqual(updated.body.user.categories.map((category) => category.name), ['AC']);
+    const after = await get('/api/provider/requests', { token: login.body.accessToken });
+    assert.equal(after.body.needsCategories, false);
+  });
+});
+
+describe('provider categories', () => {
+  it('signup asks for at least one valid, active category; several are allowed', async () => {
+    const body = (categories) => ({
+      name: 'Category Provider',
+      phoneNumber: '9876532001',
+      password: 'Password123',
+      confirmPassword: 'Password123',
+      shopLocation: SHOP_LOCATION,
+      categories,
+    });
+
+    for (const categories of [undefined, [], 'AC', ['AC'], ['64b000000000000000000000'], [ctx.categories.hidden.id]]) {
+      const result = await post('/api/auth/provider/signup', { body: body(categories) });
+      assert.equal(result.status, 400, JSON.stringify(categories));
+    }
+
+    const created = await post('/api/auth/provider/signup', {
+      body: body([ctx.categories.ac.id, ctx.categories.electrical.id, ctx.categories.ac.id]),
+    });
+    assert.equal(created.status, 201);
+    assert.deepEqual(created.body.user.categories.map((category) => category.name).sort(), ['AC', 'Electrical']);
+
+    const { default: User } = await import('../src/models/User.js');
+    const stored = await User.findById(created.body.user.id).lean();
+    assert.deepEqual(
+      stored.categories.map(String).sort(),
+      [ctx.categories.ac.id, ctx.categories.electrical.id].sort(),
+      'only ids are stored on the provider',
+    );
+
+    const publicProfile = await get(`/api/providers/${created.body.user.id}`);
+    assert.deepEqual(
+      publicProfile.body.provider.categories.map((category) => category.name).sort(),
+      ['AC', 'Electrical'],
+    );
+  });
+
+  it('providers update their categories from the profile, validated', async () => {
+    const provider = await signupProvider('Updating Provider', '9876532002', { categories: [ctx.categories.ac.id] });
+    const updated = await patch('/api/users/me', {
+      token: provider.token,
+      body: { categories: [ctx.categories.plumbing.id, ctx.categories.electrical.id] },
+    });
+    assert.equal(updated.status, 200);
+    assert.deepEqual(
+      updated.body.user.categories.map((category) => category.name).sort(),
+      ['Electrical', 'Plumbing'],
+    );
+    assert.equal((await patch('/api/users/me', { token: provider.token, body: { categories: ['nope'] } })).status, 400);
+    assert.equal((await patch('/api/users/me', { token: provider.token, body: { categories: 'AC' } })).status, 400);
+  });
+
+  it('providers only see and open requests in their categories', async () => {
+    const acOnly = await signupProvider('AC Only', '9876532003', { categories: [ctx.categories.ac.id] });
+    const plumbingOnly = await signupProvider('Plumbing Only', '9876532004', { categories: [ctx.categories.plumbing.id] });
+    const acRequest = await createRequest(requestPayload(ctx.acRepair.id));
+    const plumbingRequest = await createRequest(requestPayload(ctx.plumbing.id));
+    ctx.categoryRequests = { acOnly, plumbingOnly, acRequest, plumbingRequest };
+
+    const ids = async (token) =>
+      (await get('/api/provider/requests', { token })).body.requests.map((item) => item.id);
+
+    const acFeed = await ids(acOnly.token);
+    assert.ok(acFeed.includes(acRequest.id));
+    assert.equal(acFeed.includes(plumbingRequest.id), false);
+
+    const plumbingFeed = await ids(plumbingOnly.token);
+    assert.ok(plumbingFeed.includes(plumbingRequest.id));
+    assert.equal(plumbingFeed.includes(acRequest.id), false);
+
+    assert.equal((await get(`/api/provider/requests/${plumbingRequest.id}`, { token: acOnly.token })).status, 403);
+    assert.equal((await get(`/api/provider/requests/${acRequest.id}`, { token: acOnly.token })).status, 200);
+
+    // Admin's Provider View preview is not category-filtered.
+    const adminFeed = await ids(ctx.admin.token);
+    assert.ok(adminFeed.includes(acRequest.id) && adminFeed.includes(plumbingRequest.id));
+  });
+
+  it('a provider outside the service category cannot accept by calling the API', async () => {
+    const { acOnly, plumbingOnly, plumbingRequest } = ctx.categoryRequests;
+    const refused = await post(`/api/requests/${plumbingRequest.id}/accept`, { token: acOnly.token });
+    assert.equal(refused.status, 403);
+    assert.equal(refused.body.error.code, 'CATEGORY_NOT_ELIGIBLE');
+
+    const request = await get(`/api/requests/${plumbingRequest.id}`, { requestToken: plumbingRequest.token });
+    assert.equal(request.body.request.status, 'PENDING');
+    assert.equal(request.body.request.selectedProviderId, null);
+
+    assert.equal((await post(`/api/requests/${plumbingRequest.id}/accept`, { token: plumbingOnly.token })).status, 200);
+
+    // The assignee keeps their job even after dropping that category.
+    await patch('/api/users/me', { token: plumbingOnly.token, body: { categories: [ctx.categories.ac.id] } });
+    assert.equal((await get(`/api/provider/requests/${plumbingRequest.id}`, { token: plumbingOnly.token })).status, 200);
+    assert.equal((await post(`/api/requests/${plumbingRequest.id}/start`, { token: plumbingOnly.token })).status, 200);
+  });
+
+  it('a provider with no categories sees no requests and cannot accept any', async () => {
+    const provider = await signupProvider('Emptied Provider', '9876532005', { categories: [ctx.categories.ac.id] });
+    assert.equal((await patch('/api/users/me', { token: provider.token, body: { categories: [] } })).status, 200);
+    const feed = await get('/api/provider/requests', { token: provider.token });
+    assert.deepEqual(feed.body.requests, []);
+    assert.equal(feed.body.needsCategories, true);
+    const open = await createRequest(requestPayload(ctx.acRepair.id));
+    assert.equal((await post(`/api/requests/${open.id}/accept`, { token: provider.token })).status, 403);
+  });
+});
+
+describe('invoices', () => {
+  before(async () => {
+    ctx.invoiceProvider = await signupProvider('Invoice Provider', '9876533001', { categories: [ctx.categories.ac.id] });
+    ctx.otherProvider = await signupProvider('Other Provider', '9876533002', { categories: [ctx.categories.ac.id] });
+  });
+
+  async function invoiceCount(filter) {
+    const { default: Invoice } = await import('../src/models/Invoice.js');
+    return Invoice.countDocuments(filter);
+  }
+
+  it('a completed job creates exactly one invoice that matches the job', async () => {
+    const flow = await runFullFlow({ provider: ctx.invoiceProvider });
+    ctx.invoiceFlow = flow;
+    assert.equal(await invoiceCount({ bookingId: flow.bookingId }), 1);
+
+    const result = await get(`/api/bookings/${flow.bookingId}/invoice`, { requestToken: flow.token });
+    assert.equal(result.status, 200);
+    const { invoice } = result.body;
+    assert.match(invoice.invoiceNumber, /^4F-\d{6}$/);
+    assert.equal(invoice.bookingId, flow.bookingId);
+    assert.equal(invoice.requestId, flow.requestId);
+    assert.equal(invoice.providerId, ctx.invoiceProvider.user.id);
+    assert.deepEqual(invoice.provider, { name: 'Invoice Provider', phone: ctx.invoiceProvider.user.username });
+    assert.deepEqual(invoice.customer, { name: 'Asha Customer', phone: '9876543210' });
+    assert.deepEqual(invoice.service, { id: ctx.acRepair.id, name: 'AC Repair' });
+    assert.equal(invoice.issueKey, 'NOT_COOLING');
+    assert.equal(invoice.issueLabel, 'Not cooling');
+    assert.equal(invoice.description, 'The unit runs but the air stays warm.');
+    assert.equal('amount' in invoice, false, 'no amount is invented');
+
+    const booking = await get(`/api/bookings/${flow.bookingId}`, { requestToken: flow.token });
+    assert.equal(
+      new Date(invoice.completedAt).getTime(),
+      new Date(booking.body.booking.timeline.completedAt).getTime(),
+    );
+  });
+
+  it('repeating completion or creation never duplicates the invoice', async () => {
+    const { requestId, bookingId, token } = ctx.invoiceFlow;
+    assert.equal((await post(`/api/requests/${requestId}/complete`, { token: ctx.invoiceProvider.token })).status, 409);
+
+    const { ensureInvoiceForCompletedRequest } = await import('../src/services/invoice.service.js');
+    await Promise.all([ensureInvoiceForCompletedRequest(requestId), ensureInvoiceForCompletedRequest(requestId)]);
+    const first = await get(`/api/bookings/${bookingId}/invoice`, { requestToken: token });
+    const second = await get(`/api/bookings/${bookingId}/invoice`, { token: ctx.invoiceProvider.token });
+    assert.equal(first.body.invoice.invoiceNumber, second.body.invoice.invoiceNumber);
+    assert.equal(await invoiceCount({ bookingId }), 1);
+  });
+
+  it('incomplete and cancelled jobs have no invoice', async () => {
+    const accepted = await runFullFlow({ provider: ctx.invoiceProvider, complete: false });
+    assert.equal(await invoiceCount({ bookingId: accepted.bookingId }), 0);
+    const notYet = await get(`/api/bookings/${accepted.bookingId}/invoice`, { requestToken: accepted.token });
+    assert.equal(notYet.status, 404);
+    assert.equal(notYet.body.error.code, 'INVOICE_NOT_FOUND');
+
+    await post(`/api/requests/${accepted.requestId}/start`, { token: ctx.invoiceProvider.token });
+    assert.equal(
+      (await get(`/api/bookings/${accepted.bookingId}/invoice`, { token: ctx.invoiceProvider.token })).status,
+      404,
+    );
+    assert.equal(await invoiceCount({ bookingId: accepted.bookingId }), 0);
+
+    const open = await createRequest(requestPayload(ctx.acRepair.id));
+    await post(`/api/requests/${open.id}/cancel`, { requestToken: open.token });
+    const { ensureInvoiceForCompletedRequest } = await import('../src/services/invoice.service.js');
+    assert.equal(await ensureInvoiceForCompletedRequest(open.id), null);
+    assert.equal(await invoiceCount({ requestId: open.id }), 0);
+  });
+
+  it('only the customer, the assigned provider and admin can read it', async () => {
+    const { bookingId, token } = ctx.invoiceFlow;
+    const path = `/api/bookings/${bookingId}/invoice`;
+    const other = await runFullFlow({ provider: ctx.otherProvider });
+
+    assert.equal((await get(path, { requestToken: token })).status, 200);
+    assert.equal((await get(path, { token: ctx.invoiceProvider.token })).status, 200);
+    const admin = await get(path, { token: ctx.admin.token });
+    assert.equal(admin.status, 200);
+    assert.equal(admin.body.invoice.bookingId, bookingId);
+
+    assert.equal((await get(path)).status, 401);
+    assert.equal((await get(path, { requestToken: other.token })).status, 403, 'another customer token');
+    assert.equal((await get(path, { requestToken: 'x'.repeat(43) })).status, 401, 'a forged token');
+    assert.equal((await get(path, { token: ctx.otherProvider.token })).status, 403, 'an unrelated provider');
+    assert.equal(
+      (await get(`/api/bookings/${other.bookingId}/invoice`, { requestToken: token })).status,
+      403,
+      'changing the id in the URL',
+    );
+    assert.equal((await get('/api/bookings/64b000000000000000000000/invoice', { token: ctx.admin.token })).status, 404);
+  });
+
+  it('jobs completed before invoices existed get one on first view', async () => {
+    const flow = await runFullFlow({ provider: ctx.invoiceProvider });
+    const { default: Invoice } = await import('../src/models/Invoice.js');
+    await Invoice.deleteOne({ bookingId: flow.bookingId });
+
+    const result = await get(`/api/bookings/${flow.bookingId}/invoice`, { token: ctx.invoiceProvider.token });
+    assert.equal(result.status, 200);
+    assert.equal(await invoiceCount({ bookingId: flow.bookingId }), 1);
+  });
+
+  it('invoice data never leaks through request or service endpoints', async () => {
+    const { requestId, token } = ctx.invoiceFlow;
+    const request = await get(`/api/requests/${requestId}`, { requestToken: token });
+    assert.equal(JSON.stringify(request.body).includes('invoiceNumber'), false);
+    assert.equal(JSON.stringify((await get('/api/services')).body).includes('invoiceNumber'), false);
   });
 });

@@ -85,8 +85,10 @@ const userSchema = new mongoose.Schema(
       maxlength: 500,
       default: null,
     },
-    serviceCategories: {
-      type: [String],
+    // The categories this provider works in. They only see and accept requests for
+    // services in these categories. Empty for providers registered before categories.
+    categories: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Category' }],
       default: [],
     },
     experienceYears: {

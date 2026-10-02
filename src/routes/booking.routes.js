@@ -14,6 +14,7 @@ import {
   listNotes,
   updateNote,
 } from '../controllers/providerJobNote.controller.js';
+import { getInvoice } from '../controllers/invoice.controller.js';
 import { createReview, getReview } from '../controllers/review.controller.js';
 import { authenticateAny } from '../middleware/authenticate.js';
 import { authorizeRoles } from '../middleware/authorizeRoles.js';
@@ -58,6 +59,10 @@ router.post(
 
 router.post('/:bookingId/review', authorizeRoles(CUSTOMER), asyncHandler(createReview));
 router.get('/:bookingId/review', authorizeRoles(CUSTOMER, PROVIDER, ADMIN), asyncHandler(getReview));
+
+// The completed job's invoice: the customer (request token), the assigned provider, or
+// admin — ownership is re-checked in the service exactly as for the booking itself.
+router.get('/:bookingId/invoice', authorizeRoles(CUSTOMER, PROVIDER, ADMIN), asyncHandler(getInvoice));
 
 // Private to the assigned provider only — unlike chat, neither the customer
 // nor admin can read or write these (ownership re-checked in the service too).

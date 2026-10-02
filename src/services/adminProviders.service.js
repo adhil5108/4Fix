@@ -35,7 +35,7 @@ export async function listAdminProviders(query) {
   }
 
   if (query?.category) {
-    filter.serviceCategories = String(query.category).trim().toUpperCase();
+    filter.categories = parseObjectId(String(query.category), 'category');
   }
 
   if (query?.search) {
@@ -44,7 +44,11 @@ export async function listAdminProviders(query) {
   }
 
   const [providers, total] = await Promise.all([
-    User.find(filter).sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.pageSize),
+    User.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(pagination.skip)
+      .limit(pagination.pageSize)
+      .populate('categories'),
     User.countDocuments(filter),
   ]);
 
@@ -60,7 +64,7 @@ export async function listAdminProviders(query) {
 
 export async function findAdminProviderOrFail(providerId) {
   const id = parseObjectId(providerId, 'providerId');
-  const provider = await User.findOne({ _id: id, role: USER_ROLES.PROVIDER });
+  const provider = await User.findOne({ _id: id, role: USER_ROLES.PROVIDER }).populate('categories');
 
   if (!provider) {
     throw new ApiError(404, 'Provider not found', 'PROVIDER_NOT_FOUND');
@@ -100,7 +104,7 @@ export async function setAdminProviderStatus(providerId, isActive) {
     { _id: provider.id, role: USER_ROLES.PROVIDER },
     { $set: { isActive } },
     { returnDocument: 'after' },
-  );
+  ).populate('categories');
 
   const stats = await getProviderStats([updated.id]);
 

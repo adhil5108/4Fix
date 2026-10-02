@@ -1,4 +1,6 @@
 import { OTHER_ISSUE_KEY } from '../models/Service.js';
+import { toIdString } from '../utils/objectId.js';
+import { toCategoryRef } from './categoryPresenter.service.js';
 
 export function toPublicService(service) {
   if (!service) {
@@ -9,7 +11,10 @@ export function toPublicService(service) {
     id: service.id,
     name: service.name,
     description: service.description,
-    category: service.category,
+    // `{ id, name, image }` when the category was populated, `{ id, name: null }` when
+    // not, and null for a service that has no category yet.
+    categoryId: toIdString(service.categoryId),
+    category: toCategoryRef(service.categoryId),
     image: service.image ?? null,
     startingPrice: service.startingPrice ?? null,
     isPopular: Boolean(service.isPopular),

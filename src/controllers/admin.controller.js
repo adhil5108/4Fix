@@ -1,5 +1,12 @@
 import { getAdminDashboard } from '../services/adminDashboard.service.js';
 import {
+  createAdminCategory,
+  deleteAdminCategory,
+  getAdminCategory,
+  listAdminCategories,
+  updateAdminCategory,
+} from '../services/adminCategories.service.js';
+import {
   createAdminService,
   deleteAdminService,
   getAdminService,
@@ -18,6 +25,28 @@ import { getAdminReview, listAdminReviews } from '../services/adminReviews.servi
 
 export async function getDashboard(_req, res) {
   res.status(200).json(await getAdminDashboard());
+}
+
+// Categories
+
+export async function listCategories(_req, res) {
+  res.status(200).json(await listAdminCategories());
+}
+
+export async function getCategory(req, res) {
+  res.status(200).json(await getAdminCategory(req.params.categoryId));
+}
+
+export async function createCategory(req, res) {
+  res.status(201).json(await createAdminCategory(req.body));
+}
+
+export async function updateCategory(req, res) {
+  res.status(200).json(await updateAdminCategory(req.params.categoryId, req.body));
+}
+
+export async function deleteCategory(req, res) {
+  res.status(200).json(await deleteAdminCategory(req.params.categoryId));
 }
 
 // Services

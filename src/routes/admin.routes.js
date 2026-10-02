@@ -1,8 +1,11 @@
 import { Router } from 'express';
 import {
+  createCategory,
   createService,
+  deleteCategory,
   deleteService,
   getBooking,
+  getCategory,
   getCustomer,
   getDashboard,
   getProvider,
@@ -10,11 +13,13 @@ import {
   getReview,
   getService,
   listBookings,
+  listCategories,
   listCustomers,
   listProviders,
   listRequests,
   listReviews,
   listServices,
+  updateCategory,
   updateProviderStatus,
   updateService,
 } from '../controllers/admin.controller.js';
@@ -30,6 +35,12 @@ const router = Router();
 router.use(asyncHandler(authenticate), authorizeRoles(USER_ROLES.ADMIN));
 
 router.get('/dashboard', asyncHandler(getDashboard));
+
+router.get('/categories', asyncHandler(listCategories));
+router.post('/categories', asyncHandler(createCategory));
+router.get('/categories/:categoryId', asyncHandler(getCategory));
+router.patch('/categories/:categoryId', asyncHandler(updateCategory));
+router.delete('/categories/:categoryId', asyncHandler(deleteCategory));
 
 router.get('/services', asyncHandler(listServices));
 router.post('/services', asyncHandler(createService));

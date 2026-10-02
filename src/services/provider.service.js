@@ -45,7 +45,9 @@ export async function getProviderStats(providerIds) {
 
 export async function findPublicProviderOrFail(providerId) {
   const id = parseObjectId(providerId, 'providerId');
-  const provider = await User.findOne({ _id: id, role: USER_ROLES.PROVIDER, isActive: true });
+  const provider = await User.findOne({ _id: id, role: USER_ROLES.PROVIDER, isActive: true }).populate(
+    'categories',
+  );
 
   if (!provider) {
     throw new ApiError(404, 'Provider not found', 'PROVIDER_NOT_FOUND');

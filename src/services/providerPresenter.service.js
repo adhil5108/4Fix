@@ -1,3 +1,5 @@
+import { toCategoryRef } from './categoryPresenter.service.js';
+
 // Public provider profile: no username/phone, no auth fields.
 export function toPublicProvider(user, stats = {}) {
   if (!user) {
@@ -9,7 +11,7 @@ export function toPublicProvider(user, stats = {}) {
     name: user.name,
     profileImage: user.profileImage ?? null,
     bio: user.bio ?? null,
-    serviceCategories: user.serviceCategories || [],
+    categories: (user.categories || []).map(toCategoryRef),
     experienceYears: user.experienceYears ?? null,
     isAvailable: user.isAvailable !== false,
     rating: stats.rating ?? null,

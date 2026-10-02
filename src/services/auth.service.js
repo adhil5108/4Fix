@@ -8,7 +8,9 @@ import { toSafeUser } from './userPresenter.service.js';
 // Customer accounts from before V1 can no longer sign in; customers are anonymous.
 const AUTHENTICATED_ROLES = [USER_ROLES.PROVIDER, USER_ROLES.ADMIN];
 
-export function getCurrentUser(user) {
+export async function getCurrentUser(user) {
+  await user.populate('categories');
+
   return {
     user: toSafeUser(user),
   };
@@ -36,6 +38,8 @@ export async function loginUser(input) {
   if (!passwordMatches) {
     throw new ApiError(401, 'Invalid username or password', 'INVALID_CREDENTIALS');
   }
+
+  await user.populate('categories');
 
   return {
     accessToken: createAccessToken(user),

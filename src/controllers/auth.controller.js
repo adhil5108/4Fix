@@ -14,5 +14,5 @@ export async function signupProvider(req, res) {
 }
 
 export async function me(req, res) {
-  res.status(200).json(getCurrentUser(req.user));
+  res.status(200).json(await getCurrentUser(req.user));
 }

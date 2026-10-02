@@ -121,10 +121,17 @@ export function dateOnly(daysFromNow) {
 // Provider signup is address-only: the typed shop address is the shop location.
 export const SHOP_LOCATION = { address: 'Koramangala 5th Block' };
 
-// Providers are the only accounts in V1.
-export async function signupProvider(name, phoneNumber, { password = 'Password123', shopLocation = SHOP_LOCATION } = {}) {
+// Providers are the only accounts in V1. Unless `categories` (ids) is given, the
+// provider works in every active category, so they see every open request.
+export async function signupProvider(
+  name,
+  phoneNumber,
+  { password = 'Password123', shopLocation = SHOP_LOCATION, categories } = {},
+) {
+  const categoryIds =
+    categories ?? (await get('/api/categories')).body.categories.map((category) => category.id);
   const result = await post('/api/auth/provider/signup', {
-    body: { name, phoneNumber, password, confirmPassword: password, shopLocation },
+    body: { name, phoneNumber, password, confirmPassword: password, shopLocation, categories: categoryIds },
   });
 
   if (result.status !== 201) {

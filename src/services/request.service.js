@@ -1,6 +1,7 @@
 import Booking, { BOOKING_STATUSES } from '../models/Booking.js';
-import { OTHER_ISSUE_KEY } from '../models/Service.js';
+import Service, { OTHER_ISSUE_KEY } from '../models/Service.js';
 import ServiceRequest, { REQUEST_STATUSES } from '../models/ServiceRequest.js';
+import { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
 import { isSameId, parseObjectId, toIdString } from '../utils/objectId.js';
 import {
@@ -12,6 +13,7 @@ import { normalizePhoneNumber } from '../utils/normalizePhone.js';
 import { parseCoordinate } from '../utils/location.js';
 import { optionalText, requiredText } from '../utils/text.js';
 import { ensureBookingForAcceptedRequest, loadBooking } from './booking.service.js';
+import { ensureInvoiceForCompletedRequest } from './invoice.service.js';
 import { toBookingForProvider } from './bookingPresenter.service.js';
 import { syncBookingWithRequest } from './bookingSync.service.js';
 import { listExternalJobsForProvider } from './externalJob.service.js';
@@ -315,20 +317,58 @@ export function startRequest(provider, requestId) {
   return applyProviderTransition(provider, requestId, REQUEST_STATUSES.IN_PROGRESS);
 }
 
-export function completeRequest(provider, requestId) {
-  return applyProviderTransition(provider, requestId, REQUEST_STATUSES.COMPLETED);
+// Completing a 4Fix job records its invoice (idempotent: one per booking).
+export async function completeRequest(provider, requestId) {
+  const result = await applyProviderTransition(provider, requestId, REQUEST_STATUSES.COMPLETED);
+
+  await ensureInvoiceForCompletedRequest(result.request.id);
+
+  return result;
 }
 
-export async function listAvailableRequests(_provider, query) {
+// Category eligibility — enforced here, not just hidden in the UI. A provider sees and
+// accepts open requests only for services in the categories they work in; with no
+// categories chosen they see none. ADMIN (Provider View preview) is never filtered.
+function providerCategoryIds(provider) {
+  return provider.categories || [];
+}
+
+async function eligibleServiceIds(provider) {
+  const categories = providerCategoryIds(provider);
+
+  return categories.length === 0
+    ? []
+    : Service.find({ categoryId: { $in: categories } }).distinct('_id');
+}
+
+async function isEligibleForRequest(provider, request) {
+  if (provider.role === USER_ROLES.ADMIN) {
+    return true;
+  }
+
+  const service = await Service.findById(toIdString(request.serviceId)).select('categoryId');
+
+  return Boolean(service?.categoryId) &&
+    providerCategoryIds(provider).some((categoryId) => isSameId(categoryId, service.categoryId));
+}
+
+export async function listAvailableRequests(provider, query) {
   const status = parseStatusFilter(query?.status, OPEN_REQUEST_STATUSES);
-  const requests = await ServiceRequest.find({
-    status: status || REQUEST_STATUSES.PENDING,
-  })
+  const isAdmin = provider.role === USER_ROLES.ADMIN;
+  const filter = { status: status || REQUEST_STATUSES.PENDING };
+
+  if (!isAdmin) {
+    filter.serviceId = { $in: await eligibleServiceIds(provider) };
+  }
+
+  const requests = await ServiceRequest.find(filter)
     .sort({ createdAt: -1 })
     .populate({ path: 'serviceId' });
 
   return {
     requests: requests.map(toProviderRequestSummary),
+    // Lets the app explain an empty feed: the provider hasn't chosen categories yet.
+    needsCategories: !isAdmin && providerCategoryIds(provider).length === 0,
   };
 }
 
@@ -373,12 +413,14 @@ export async function listProviderJobs(provider, query) {
   return { jobs };
 }
 
-// Open requests are visible to every provider; once accepted, only to the assignee.
-function assertProviderCanAccessRequest(request, provider) {
-  if (
-    OPEN_REQUEST_STATUSES.includes(request.status) ||
-    isSameId(request.selectedProviderId, provider.id)
-  ) {
+// Open requests are visible to providers working in the service's category; once
+// accepted, only to the assignee (even if they later drop that category).
+async function assertProviderCanAccessRequest(request, provider) {
+  if (isSameId(request.selectedProviderId, provider.id)) {
+    return;
+  }
+
+  if (OPEN_REQUEST_STATUSES.includes(request.status) && (await isEligibleForRequest(provider, request))) {
     return;
   }
 
@@ -388,7 +430,7 @@ function assertProviderCanAccessRequest(request, provider) {
 export async function getProviderRequest(provider, requestId) {
   const request = await findRequestOrFail(requestId);
 
-  assertProviderCanAccessRequest(request, provider);
+  await assertProviderCanAccessRequest(request, provider);
 
   const [detailedRequest, booking] = await Promise.all([
     ServiceRequest.findById(request.id).populate(PROVIDER_DETAIL_POPULATE),
@@ -414,7 +456,7 @@ async function presentAcceptedRequest(requestId) {
   };
 }
 
-// A provider claims an open request. The claim is a single conditional update on
+// A provider claims an open request in one of their categories. The claim is a single conditional update on
 // { status: PENDING, selectedProviderId: null }, so when providers race exactly one
 // write matches; everyone else gets 409. Repeating the call as the winner is a no-op
 // that returns the same job (the booking's unique requestId prevents duplicates).
@@ -423,6 +465,14 @@ export async function acceptRequest(provider, requestId) {
 
   if (isSameId(request.selectedProviderId, provider.id)) {
     return presentAcceptedRequest(request.id);
+  }
+
+  if (!(await isEligibleForRequest(provider, request))) {
+    throw new ApiError(
+      403,
+      'You can only accept requests in the categories you work in.',
+      'CATEGORY_NOT_ELIGIBLE',
+    );
   }
 
   const claimed = await ServiceRequest.findOneAndUpdate(

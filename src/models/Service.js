@@ -50,12 +50,12 @@ const serviceSchema = new mongoose.Schema(
       trim: true,
       maxlength: 1000,
     },
-    category: {
-      type: String,
-      required: true,
-      trim: true,
-      uppercase: true,
-      maxlength: 60,
+    // Admin always sets it; null only on services created before categories existed
+    // and not yet migrated (scripts/migrate-categories.js).
+    categoryId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Category',
+      default: null,
       index: true,
     },
     image: {

@@ -1,3 +1,5 @@
+import { toCategoryRef } from './categoryPresenter.service.js';
+
 export function toSafeUser(user) {
   const safeUser = {
     id: user.id,
@@ -13,7 +15,7 @@ export function toSafeUser(user) {
   if (user.role === 'PROVIDER') {
     safeUser.profileImage = user.profileImage ?? null;
     safeUser.bio = user.bio ?? null;
-    safeUser.serviceCategories = user.serviceCategories || [];
+    safeUser.categories = (user.categories || []).map(toCategoryRef);
     safeUser.experienceYears = user.experienceYears ?? null;
     safeUser.isAvailable = user.isAvailable !== false;
     // Own profile and admin views only — never part of the public provider profile.

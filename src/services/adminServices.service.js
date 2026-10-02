@@ -1,3 +1,4 @@
+import Category from '../models/Category.js';
 import Service, { OTHER_ISSUE_KEY } from '../models/Service.js';
 import ServiceRequest from '../models/ServiceRequest.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -96,8 +97,12 @@ function buildServiceFields(input, { partial }) {
     fields.description = requiredText(input?.description, 'Description', 5, 1000);
   }
 
-  if (!partial || input?.category !== undefined) {
-    fields.category = requiredText(input?.category, 'Category', 2, 60).toUpperCase();
+  if (!partial || input?.categoryId !== undefined) {
+    if (input?.categoryId === undefined || input?.categoryId === null || input?.categoryId === '') {
+      throw new ApiError(400, 'Category is required', 'VALIDATION_ERROR');
+    }
+
+    fields.categoryId = parseObjectId(String(input.categoryId), 'categoryId');
   }
 
   if (input?.image !== undefined) {
@@ -125,9 +130,17 @@ function buildServiceFields(input, { partial }) {
   return fields;
 }
 
+// Admin may file a service under a disabled category (it stays hidden until enabled),
+// but never under one that doesn't exist.
+async function assertCategoryExists(categoryId) {
+  if (categoryId && !(await Category.exists({ _id: categoryId }))) {
+    throw new ApiError(400, 'Category does not exist', 'VALIDATION_ERROR');
+  }
+}
+
 export async function findAdminServiceOrFail(serviceId) {
   const id = parseObjectId(serviceId, 'serviceId');
-  const service = await Service.findById(id);
+  const service = await Service.findById(id).populate('categoryId');
 
   if (!service) {
     throw new ApiError(404, 'Service not found', 'SERVICE_NOT_FOUND');
@@ -147,14 +160,15 @@ export async function listAdminServices(query) {
   }
 
   if (query?.category) {
-    filter.category = String(query.category).trim().toUpperCase();
+    filter.categoryId = parseObjectId(String(query.category), 'category');
   }
 
   const [services, total] = await Promise.all([
     Service.find(filter)
       .sort({ createdAt: -1 })
       .skip(pagination.skip)
-      .limit(pagination.pageSize),
+      .limit(pagination.pageSize)
+      .populate('categoryId'),
     Service.countDocuments(filter),
   ]);
 
@@ -167,7 +181,10 @@ export async function getAdminService(serviceId) {
 
 export async function createAdminService(input) {
   const fields = buildServiceFields(input, { partial: false });
+
+  await assertCategoryExists(fields.categoryId);
   const service = await Service.create({ ...fields, issues: fields.issues || [] });
+  await service.populate('categoryId');
 
   return { service: toAdminService(service) };
 }
@@ -180,11 +197,12 @@ export async function updateAdminService(serviceId, input) {
     throw new ApiError(400, 'No changes were provided', 'VALIDATION_ERROR');
   }
 
+  await assertCategoryExists(fields.categoryId);
   const updated = await Service.findByIdAndUpdate(
     existing.id,
     { $set: fields },
     { returnDocument: 'after' },
-  );
+  ).populate('categoryId');
 
   return { service: toAdminService(updated) };
 }

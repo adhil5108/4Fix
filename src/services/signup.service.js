@@ -2,6 +2,7 @@ import User, { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
 import { normalizePhoneNumber } from '../utils/normalizePhone.js';
 import { validateSignupShopLocation } from '../utils/shopLocation.js';
+import { parseProviderCategoryIds } from './category.service.js';
 import { hashPassword } from './password.service.js';
 import { createAccessToken } from './token.service.js';
 import { toSafeUser } from './userPresenter.service.js';
@@ -30,6 +31,8 @@ function validateSignupInput({ name, phoneNumber, password, confirmPassword } = 
 export async function signupProvider(input) {
   validateSignupInput(input);
   const shopLocation = validateSignupShopLocation(input?.shopLocation);
+  // "Which categories do you work in?" — at least one, so the request feed has content.
+  const categories = await parseProviderCategoryIds(input?.categories ?? [], { required: true });
 
   const username = normalizePhoneNumber(input.phoneNumber);
   const existingUser = await User.exists({ username });
@@ -46,7 +49,9 @@ export async function signupProvider(input) {
     phoneVerifiedAt: null,
     isActive: true,
     shopLocation,
+    categories,
   });
+  await user.populate('categories');
 
   return {
     accessToken: createAccessToken(user),

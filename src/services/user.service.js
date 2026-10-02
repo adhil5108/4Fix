@@ -1,7 +1,8 @@
 import User, { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
-import { optionalText, requiredText, stringList } from '../utils/text.js';
+import { optionalText, requiredText } from '../utils/text.js';
 import { validateShopLocation } from '../utils/shopLocation.js';
+import { parseProviderCategoryIds } from './category.service.js';
 import { toSafeUser } from './userPresenter.service.js';
 
 function parseExperienceYears(value) {
@@ -16,7 +17,7 @@ function parseExperienceYears(value) {
   return value;
 }
 
-function buildUpdate(user, input) {
+async function buildUpdate(user, input) {
   const update = {};
 
   if (input?.name !== undefined) {
@@ -33,14 +34,12 @@ function buildUpdate(user, input) {
       update.profileImage = optionalText(input.profileImage, 'Profile image', 500);
     }
 
-    if (input?.serviceCategories !== undefined) {
-      update.serviceCategories = [
-        ...new Set(
-          stringList(input.serviceCategories, 'Service categories', 20, 60).map((category) =>
-            category.toUpperCase(),
-          ),
-        ),
-      ];
+    // Providers may hold an empty list while editing (the request feed then explains
+    // that they need to choose); signup is what requires at least one.
+    if (input?.categories !== undefined) {
+      update.categories = await parseProviderCategoryIds(input.categories, {
+        current: user.categories || [],
+      });
     }
 
     if (input?.experienceYears !== undefined) {
@@ -64,7 +63,7 @@ function buildUpdate(user, input) {
 }
 
 export async function updateCurrentUser(user, input) {
-  const update = buildUpdate(user, input);
+  const update = await buildUpdate(user, input);
 
   if (Object.keys(update).length === 0) {
     throw new ApiError(400, 'Name must be at least 2 characters', 'VALIDATION_ERROR');
@@ -74,7 +73,7 @@ export async function updateCurrentUser(user, input) {
     user.id,
     { $set: update },
     { returnDocument: 'after' },
-  );
+  ).populate('categories');
 
   if (!updatedUser) {
     throw new ApiError(404, 'User not found', 'USER_NOT_FOUND');
