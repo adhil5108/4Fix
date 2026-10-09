@@ -313,6 +313,14 @@ async function applyProviderTransition(provider, requestId, targetStatus, extraF
   };
 }
 
+// The provider is at the customer's location. A manual confirmation only - 4Fix never
+// reads the provider's position.
+export function markLocationReached(provider, requestId) {
+  return applyProviderTransition(provider, requestId, REQUEST_STATUSES.LOCATION_REACHED, {
+    locationReachedAt: new Date(),
+  });
+}
+
 export function startRequest(provider, requestId) {
   return applyProviderTransition(provider, requestId, REQUEST_STATUSES.IN_PROGRESS);
 }

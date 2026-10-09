@@ -1,11 +1,14 @@
 import { REQUEST_STATUSES } from '../models/ServiceRequest.js';
 import { ApiError } from './ApiError.js';
 
-// V1: a request is open (PENDING) until exactly one provider accepts it; that
-// provider then starts the job and completes it. No scheduling or travel steps.
+// A request is open (PENDING) until exactly one provider accepts it; that provider then
+// marks that they reached the customer's location, starts the job and completes it.
+// Every step is required and in order - an accepted job cannot skip to IN_PROGRESS.
+// No scheduling or live-tracking steps.
 const ALLOWED_TRANSITIONS = {
   [REQUEST_STATUSES.PENDING]: [REQUEST_STATUSES.ACCEPTED, REQUEST_STATUSES.CANCELLED],
-  [REQUEST_STATUSES.ACCEPTED]: [REQUEST_STATUSES.IN_PROGRESS],
+  [REQUEST_STATUSES.ACCEPTED]: [REQUEST_STATUSES.LOCATION_REACHED],
+  [REQUEST_STATUSES.LOCATION_REACHED]: [REQUEST_STATUSES.IN_PROGRESS],
   [REQUEST_STATUSES.IN_PROGRESS]: [REQUEST_STATUSES.COMPLETED],
   [REQUEST_STATUSES.COMPLETED]: [],
   [REQUEST_STATUSES.CANCELLED]: [],

@@ -19,6 +19,7 @@ export function toSafeUser(user) {
     safeUser.experienceYears = user.experienceYears ?? null;
     safeUser.isAvailable = user.isAvailable !== false;
     // Own profile and admin views only — never part of the public provider profile.
+    safeUser.shopName = user.shopName ?? null;
     safeUser.shopLocation = user.shopLocation
       ? {
           latitude: user.shopLocation.latitude ?? null,

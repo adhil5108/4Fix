@@ -30,10 +30,12 @@ function toBookingRequest(request) {
   };
 }
 
-// accepted → started → completed; there are no travel/arrival steps in V1.
+// accepted → location reached → started → completed. `locationReachedAt` is null on
+// jobs started before that step existed. No live travel tracking.
 function toTimeline(booking) {
   return {
     acceptedAt: booking.confirmedAt,
+    locationReachedAt: booking.locationReachedAt ?? null,
     startedAt: booking.technicianStartedAt ?? null,
     completedAt: booking.completedAt ?? null,
   };

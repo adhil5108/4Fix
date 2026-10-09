@@ -12,6 +12,7 @@ import {
   requestPayload,
   settle,
   SHOP_LOCATION,
+  SHOP_NAME,
   signupProvider,
   startTestServer,
   stopTestServer,
@@ -101,8 +102,9 @@ async function seedUsers() {
   ctx.admin = { token: login.body.accessToken, user: login.body.user };
 }
 
-// Drives a request through the full V1 flow (anonymous create → provider accepts →
-// start → complete). No account, quote, payment, schedule or travel step.
+// Drives a request through the full flow (anonymous create → provider accepts →
+// location reached → start → complete). No account, quote, payment, schedule or live
+// tracking. `complete: false` stops right after acceptance.
 async function runFullFlow({ provider, complete = true, body }) {
   const request = await createRequest(body || requestPayload(ctx.acRepair.id, { issueKey: 'NOT_COOLING' }));
   const accepted = await post(`/api/requests/${request.id}/accept`, { token: provider.token });
@@ -110,6 +112,7 @@ async function runFullFlow({ provider, complete = true, body }) {
   const bookingId = accepted.body.booking.id;
 
   if (complete) {
+    assert.equal((await post(`/api/requests/${request.id}/location-reached`, { token: provider.token })).status, 200);
     assert.equal((await post(`/api/requests/${request.id}/start`, { token: provider.token })).status, 200);
     assert.equal((await post(`/api/requests/${request.id}/complete`, { token: provider.token })).status, 200);
   }
@@ -402,9 +405,18 @@ describe('provider signup and profile', () => {
     phoneNumber: '9876501001',
     password: 'Password123',
     confirmPassword: 'Password123',
+    shopName: SHOP_NAME,
     shopLocation: SHOP_LOCATION,
     categories: [ctx.categories.ac.id],
     ...overrides,
+  });
+
+  it('requires a shop name at signup, separate from the address', async () => {
+    for (const shopName of [undefined, null, '', '   ', 'A', 'x'.repeat(121), 42]) {
+      const result = await post('/api/auth/provider/signup', { body: base({ shopName }) });
+      assert.equal(result.status, 400, JSON.stringify(shopName));
+      assert.equal(result.body.error.code, 'VALIDATION_ERROR');
+    }
   });
 
   it('requires a shop address at signup', async () => {
@@ -426,16 +438,17 @@ describe('provider signup and profile', () => {
     }
   });
 
-  it('signs up with only a typed shop address — no coordinates required or invented', async () => {
+  it('stores the shop name and address separately — no coordinates required or invented', async () => {
     const created = await post('/api/auth/provider/signup', {
-      body: base({ shopLocation: { address: '  Cool Air Services, MG Road  ' } }),
+      body: base({ shopName: '  Cool Air Services  ', shopLocation: { address: '  MG Road, Kochi, Kerala  ' } }),
     });
     assert.equal(created.status, 201);
     assert.equal(created.body.user.role, 'PROVIDER');
+    assert.equal(created.body.user.shopName, 'Cool Air Services');
     assert.deepEqual(created.body.user.shopLocation, {
       latitude: null,
       longitude: null,
-      address: 'Cool Air Services, MG Road',
+      address: 'MG Road, Kochi, Kerala',
     });
 
     // Coordinates sent at signup are ignored: registration takes the address only.
@@ -448,11 +461,13 @@ describe('provider signup and profile', () => {
     const login = await post('/api/auth/login', { body: { username: '9876501001', password: 'Password123' } });
     assert.equal(login.status, 200);
     const me = await get('/api/auth/me', { token: login.body.accessToken });
-    assert.equal(me.body.user.shopLocation.address, 'Cool Air Services, MG Road');
+    assert.equal(me.body.user.shopName, 'Cool Air Services');
+    assert.equal(me.body.user.shopLocation.address, 'MG Road, Kochi, Kerala');
 
     const { default: User } = await import('../src/models/User.js');
     const stored = await User.findById(created.body.user.id);
-    assert.equal(stored.shopLocation.address, 'Cool Air Services, MG Road');
+    assert.equal(stored.shopName, 'Cool Air Services');
+    assert.equal(stored.shopLocation.address, 'MG Road, Kochi, Kerala');
     assert.equal(stored.shopLocation.latitude, null);
     assert.equal(stored.shopLocation.longitude, null);
 
@@ -460,26 +475,42 @@ describe('provider signup and profile', () => {
     assert.equal(duplicate.status, 409);
   });
 
-  it('profile editing still requires valid coordinates', async () => {
+  it('profile editing takes the shop address only, validated, and never coordinates', async () => {
     for (const shopLocation of [
-      { address: 'Address only' },
-      { latitude: 91, longitude: 77.6 },
-      { latitude: 12.9, longitude: -180.01 },
-      { latitude: '12.9', longitude: 77.6 },
+      { latitude: 12.9, longitude: 77.6 },
+      { address: 'MG' },
+      { address: 'x'.repeat(241) },
+      { address: 42 },
+      'MG Road',
     ]) {
       const result = await patch('/api/users/me', { token: ctx.provider1.token, body: { shopLocation } });
       assert.equal(result.status, 400, JSON.stringify(shopLocation));
     }
+
+    for (const shopName of ['A', 'x'.repeat(121), 42]) {
+      const result = await patch('/api/users/me', { token: ctx.provider1.token, body: { shopName } });
+      assert.equal(result.status, 400, JSON.stringify(shopName));
+    }
+
+    // Coordinates sent from a client are ignored, not stored.
+    const withCoords = await patch('/api/users/me', {
+      token: ctx.provider1.token,
+      body: { shopLocation: { address: 'Some Street, Kochi', latitude: 9.9, longitude: 76.2 } },
+    });
+    assert.equal(withCoords.status, 200);
+    assert.equal(withCoords.body.user.shopLocation.latitude, null);
+    assert.equal(withCoords.body.user.shopLocation.longitude, null);
   });
 
-  it('updates the shop location from the profile, with validation', async () => {
+  it('updates the shop name and address separately from the profile', async () => {
     const updated = await patch('/api/users/me', {
       token: ctx.provider1.token,
       body: {
         bio: 'AC specialist',
         categories: [ctx.categories.ac.id, ctx.categories.plumbing.id, ctx.categories.legacy.id],
         experienceYears: 6,
-        shopLocation: { latitude: 12.95, longitude: 77.6, address: 'MG Road' },
+        shopName: 'Prakash Cooling Works',
+        shopLocation: { address: 'MG Road' },
       },
     });
     assert.equal(updated.status, 200);
@@ -487,16 +518,59 @@ describe('provider signup and profile', () => {
       updated.body.user.categories.map((category) => category.name),
       ['AC', 'Plumbing', 'Legacy'],
     );
-    assert.deepEqual(updated.body.user.shopLocation, { latitude: 12.95, longitude: 77.6, address: 'MG Road' });
+    assert.equal(updated.body.user.shopName, 'Prakash Cooling Works');
+    assert.deepEqual(updated.body.user.shopLocation, { latitude: null, longitude: null, address: 'MG Road' });
 
-    const invalid = await patch('/api/users/me', {
-      token: ctx.provider1.token,
-      body: { shopLocation: { latitude: 100, longitude: 77.6 } },
-    });
-    assert.equal(invalid.status, 400);
+    // Each field is edited on its own; changing one leaves the other alone.
+    const renamed = await patch('/api/users/me', { token: ctx.provider1.token, body: { shopName: 'Prakash Tech Services' } });
+    assert.equal(renamed.body.user.shopName, 'Prakash Tech Services');
+    assert.equal(renamed.body.user.shopLocation.address, 'MG Road');
 
     const cleared = await patch('/api/users/me', { token: ctx.provider1.token, body: { shopLocation: null } });
     assert.equal(cleared.status, 400, 'shop location cannot be removed');
+  });
+
+  it('existing providers keep their combined shop text as the address, with no invented name', async () => {
+    const { default: User } = await import('../src/models/User.js');
+    const { hashPassword } = await import('../src/services/password.service.js');
+    const { createAccessToken } = await import('../src/services/token.service.js');
+
+    // Written straight to the collection, exactly as older records look: no shopName
+    // field at all, name and address combined, and coordinates set from the old map UI.
+    const { insertedId } = await User.collection.insertOne({
+      name: 'Old Shop Provider',
+      username: '919876501099',
+      passwordHash: await hashPassword('Password123'),
+      role: 'PROVIDER',
+      isActive: true,
+      categories: [],
+      shopLocation: { latitude: 9.97, longitude: 76.28, address: 'Cool Air Services, MG Road, Kochi' },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const legacy = await User.findById(insertedId);
+    const token = createAccessToken(legacy);
+
+    const me = await get('/api/auth/me', { token });
+    assert.equal(me.status, 200);
+    assert.equal(me.body.user.shopName, null, 'no shop name is guessed from the address');
+    assert.equal(me.body.user.shopLocation.address, 'Cool Air Services, MG Road, Kochi');
+
+    // Saving a name later leaves the stored address and coordinates untouched.
+    const named = await patch('/api/users/me', { token, body: { shopName: 'Cool Air Services' } });
+    assert.equal(named.status, 200);
+    assert.equal(named.body.user.shopName, 'Cool Air Services');
+    assert.equal(named.body.user.shopLocation.address, 'Cool Air Services, MG Road, Kochi');
+
+    // Editing the address keeps previously stored coordinates rather than wiping them.
+    const moved = await patch('/api/users/me', { token, body: { shopLocation: { address: 'MG Road, Kochi, Kerala' } } });
+    assert.equal(moved.status, 200);
+    assert.deepEqual(moved.body.user.shopLocation, { latitude: 9.97, longitude: 76.28, address: 'MG Road, Kochi, Kerala' });
+
+    // Older providers can also save without ever adding a name; blank clears it.
+    const blank = await patch('/api/users/me', { token, body: { shopName: '   ' } });
+    assert.equal(blank.status, 200);
+    assert.equal(blank.body.user.shopName, null);
   });
 
   it('never exposes the shop location on the public profile', async () => {
@@ -505,12 +579,14 @@ describe('provider signup and profile', () => {
     assert.equal(result.body.provider.name, 'Prakash Tech');
     assert.equal(result.body.provider.bio, 'AC specialist');
     assert.equal('shopLocation' in result.body.provider, false);
+    assert.equal('shopName' in result.body.provider, false);
     assert.equal('username' in result.body.provider, false);
     assert.equal('phoneVerifiedAt' in result.body.provider, false);
     assert.equal(JSON.stringify(result.body).includes('MG Road'), false);
 
     const admin = await get(`/api/admin/providers/${ctx.provider1.user.id}`, { token: ctx.admin.token });
     assert.equal(admin.body.provider.shopLocation.address, 'MG Road');
+    assert.equal(admin.body.provider.shopName, 'Prakash Tech Services');
 
     assert.equal((await get(`/api/providers/${ctx.legacyCustomer.user.id}`)).status, 404);
   });
@@ -1161,30 +1237,76 @@ describe('provider job notes', () => {
   });
 });
 
-describe('job lifecycle (ASSIGNED → IN_PROGRESS → COMPLETED)', () => {
+describe('job lifecycle (ASSIGNED → LOCATION_REACHED → IN_PROGRESS → COMPLETED)', () => {
+  const reach = (auth) => post(`/api/requests/${ctx.requestA.id}/location-reached`, auth);
   const start = (auth) => post(`/api/requests/${ctx.requestA.id}/start`, auth);
   const complete = (auth) => post(`/api/requests/${ctx.requestA.id}/complete`, auth);
 
   it('only the assigned provider moves the job, one step at a time', async () => {
+    const skipStart = await start({ token: ctx.provider1.token });
+    assert.equal(skipStart.status, 409, 'cannot start before reaching the location');
+    assert.equal(skipStart.body.error.code, 'INVALID_STATE_TRANSITION');
     assert.equal((await complete({ token: ctx.provider1.token })).status, 409, 'cannot complete before starting');
-    assert.equal((await start({ token: ctx.provider2.token })).status, 403);
-    assert.equal((await start({ requestToken: ctx.requestA.token })).status, 401);
-    assert.equal((await start({})).status, 401);
-    assert.equal((await start({ token: ctx.admin.token })).status, 403);
+
+    for (const call of [reach, start]) {
+      assert.equal((await call({ token: ctx.provider2.token })).status, 403);
+      assert.equal((await call({ requestToken: ctx.requestA.token })).status, 401);
+      assert.equal((await call({})).status, 401);
+      assert.equal((await call({ token: ctx.admin.token })).status, 403);
+    }
+
+    const detail = await get(`/api/requests/${ctx.requestA.id}`, { requestToken: ctx.requestA.token });
+    assert.equal(detail.body.request.status, 'ACCEPTED', 'rejected calls change nothing');
   });
 
-  it('start puts the request and job in progress, with no travel or arrival step', async () => {
+  it('location reached is recorded on the request and the job, and shown to the customer', async () => {
+    const reached = await reach({ token: ctx.provider1.token });
+    assert.equal(reached.status, 200);
+    assert.equal(reached.body.request.status, 'LOCATION_REACHED');
+    assert.ok(reached.body.request.locationReachedAt);
+    // Customer contact and navigation stay available to the assigned provider.
+    assert.equal(reached.body.request.location.navigationUrl, NAV_URL);
+    assert.equal(reached.body.request.customer.phone, '9876543210');
+    assert.equal((await reach({ token: ctx.provider1.token })).status, 409, 'not repeatable');
+    assert.equal((await complete({ token: ctx.provider1.token })).status, 409, 'cannot complete before starting');
+
+    const customerView = await get(`/api/requests/${ctx.requestA.id}`, { requestToken: ctx.requestA.token });
+    assert.equal(customerView.body.request.status, 'LOCATION_REACHED');
+    assert.ok(customerView.body.request.locationReachedAt);
+    assert.equal(customerView.body.request.booking.status, 'LOCATION_REACHED');
+
+    const booking = await get(`/api/bookings/${ctx.bookingA.id}`, { requestToken: ctx.requestA.token });
+    assert.equal(booking.body.booking.status, 'LOCATION_REACHED');
+    assert.equal(booking.body.booking.requestStatus, 'LOCATION_REACHED');
+    assert.ok(booking.body.booking.timeline.locationReachedAt);
+    assert.equal(booking.body.booking.timeline.startedAt, null);
+
+    const providerJobs = await get('/api/provider/jobs?bookingStatus=LOCATION_REACHED', { token: ctx.provider1.token });
+    const job = providerJobs.body.jobs.find((item) => item.id === ctx.requestA.id);
+    assert.ok(job.timeline.locationReachedAt);
+
+    // Grouped with the other not-yet-started jobs.
+    const upcoming = await get('/api/bookings?status=UPCOMING', { token: ctx.provider1.token });
+    assert.ok(upcoming.body.bookings.some((item) => item.id === ctx.bookingA.id));
+  });
+
+  it('start puts the request and job in progress after location reached', async () => {
     const started = await start({ token: ctx.provider1.token });
     assert.equal(started.status, 200);
     assert.equal(started.body.request.status, 'IN_PROGRESS');
     assert.equal(started.body.request.location.navigationUrl, NAV_URL);
     assert.equal((await start({ token: ctx.provider1.token })).status, 409);
+    assert.equal((await reach({ token: ctx.provider1.token })).status, 409, 'cannot go back');
 
     const booking = await get(`/api/bookings/${ctx.bookingA.id}`, { requestToken: ctx.requestA.token });
     assert.equal(booking.body.booking.status, 'IN_PROGRESS');
     assert.equal(booking.body.booking.requestStatus, 'IN_PROGRESS');
+    assert.ok(booking.body.booking.timeline.locationReachedAt);
     assert.ok(booking.body.booking.timeline.startedAt);
-    assert.deepEqual(Object.keys(booking.body.booking.timeline).sort(), ['acceptedAt', 'completedAt', 'startedAt']);
+    assert.deepEqual(
+      Object.keys(booking.body.booking.timeline).sort(),
+      ['acceptedAt', 'completedAt', 'locationReachedAt', 'startedAt'],
+    );
 
     const active = await get('/api/provider/jobs?bookingStatus=IN_PROGRESS', { token: ctx.provider1.token });
     assert.ok(active.body.jobs.some((job) => job.id === ctx.requestA.id));
@@ -1201,6 +1323,59 @@ describe('job lifecycle (ASSIGNED → IN_PROGRESS → COMPLETED)', () => {
 
     assert.equal((await complete({ token: ctx.provider1.token })).status, 409);
     assert.equal((await start({ token: ctx.provider1.token })).status, 409);
+    assert.equal((await reach({ token: ctx.provider1.token })).status, 409);
+  });
+
+  it('pending and cancelled requests cannot be marked as location reached', async () => {
+    const open = await createRequest(requestPayload(ctx.acRepair.id));
+    assert.equal((await post(`/api/requests/${open.id}/location-reached`, { token: ctx.provider1.token })).status, 403);
+
+    assert.equal((await post(`/api/requests/${open.id}/cancel`, { requestToken: open.token })).status, 200);
+    assert.equal((await post(`/api/requests/${open.id}/location-reached`, { token: ctx.provider1.token })).status, 403);
+  });
+
+  it('jobs saved in older statuses keep working', async () => {
+    const { default: ServiceRequest } = await import('../src/models/ServiceRequest.js');
+    const { default: Booking } = await import('../src/models/Booking.js');
+    const { default: mongoose } = await import('mongoose');
+
+    // A job already IN_PROGRESS from before this step existed: no locationReachedAt
+    // fields at all. It completes normally and reports the step as null.
+    const started = await runFullFlow({ provider: ctx.provider2, complete: false });
+    const requestOid = new mongoose.Types.ObjectId(started.requestId);
+    const bookingOid = new mongoose.Types.ObjectId(started.bookingId);
+    await ServiceRequest.collection.updateOne({ _id: requestOid }, { $set: { status: 'IN_PROGRESS' }, $unset: { locationReachedAt: '' } });
+    await Booking.collection.updateOne(
+      { _id: bookingOid },
+      { $set: { bookingStatus: 'IN_PROGRESS', technicianStartedAt: new Date() }, $unset: { locationReachedAt: '' } },
+    );
+
+    const before = await get(`/api/bookings/${started.bookingId}`, { requestToken: started.token });
+    assert.equal(before.status, 200);
+    assert.equal(before.body.booking.timeline.locationReachedAt, null);
+    assert.equal((await post(`/api/requests/${started.requestId}/location-reached`, { token: ctx.provider2.token })).status, 409);
+    const completed = await post(`/api/requests/${started.requestId}/complete`, { token: ctx.provider2.token });
+    assert.equal(completed.status, 200);
+    assert.equal(completed.body.request.status, 'COMPLETED');
+    assert.equal((await get(`/api/bookings/${started.bookingId}/invoice`, { requestToken: started.token })).status, 200);
+
+    // A job accepted before this step existed (stored without the field) continues
+    // with Location Reached, then Start.
+    const accepted = await runFullFlow({ provider: ctx.provider2, complete: false });
+    await ServiceRequest.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(accepted.requestId) },
+      { $unset: { locationReachedAt: '' } },
+    );
+    await Booking.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(accepted.bookingId) },
+      { $unset: { locationReachedAt: '' } },
+    );
+    const customerView = await get(`/api/requests/${accepted.requestId}`, { requestToken: accepted.token });
+    assert.equal(customerView.body.request.status, 'ACCEPTED');
+    assert.equal(customerView.body.request.locationReachedAt, null);
+    assert.equal((await post(`/api/requests/${accepted.requestId}/location-reached`, { token: ctx.provider2.token })).status, 200);
+    assert.equal((await post(`/api/requests/${accepted.requestId}/start`, { token: ctx.provider2.token })).status, 200);
+    assert.equal((await post(`/api/requests/${accepted.requestId}/complete`, { token: ctx.provider2.token })).status, 200);
   });
 
   it('the provider never shares a live location; the shop location stays on the profile', async () => {
@@ -1211,17 +1386,23 @@ describe('job lifecycle (ASSIGNED → IN_PROGRESS → COMPLETED)', () => {
     }
 
     const me = await get('/api/auth/me', { token: ctx.provider1.token });
-    assert.deepEqual(me.body.user.shopLocation, { latitude: 12.95, longitude: 77.6, address: 'MG Road' });
+    assert.deepEqual(me.body.user.shopLocation, { latitude: null, longitude: null, address: 'MG Road' });
 
     // Navigation always targets the customer, never the shop.
     const jobs = await get('/api/provider/jobs', { token: ctx.provider1.token });
     const job = jobs.body.jobs.find((item) => item.id === ctx.requestA.id);
     assert.equal(job.location.navigationUrl, NAV_URL);
-    assert.equal(JSON.stringify(job).includes('77.6,'), false);
+    assert.equal(JSON.stringify(job).includes('MG Road'), false);
   });
 
   it('only one of two concurrent transitions succeeds', async () => {
     const flow = await runFullFlow({ provider: ctx.provider2, complete: false });
+    const reached = await Promise.all([
+      post(`/api/requests/${flow.requestId}/location-reached`, { token: ctx.provider2.token }),
+      post(`/api/requests/${flow.requestId}/location-reached`, { token: ctx.provider2.token }),
+    ]);
+    assert.deepEqual(reached.map((result) => result.status).sort(), [200, 409]);
+
     const results = await Promise.all([
       post(`/api/requests/${flow.requestId}/start`, { token: ctx.provider2.token }),
       post(`/api/requests/${flow.requestId}/start`, { token: ctx.provider2.token }),
@@ -1300,6 +1481,91 @@ describe('reviews', () => {
   });
 });
 
+describe('provider reviews (My Reviews)', () => {
+  const mine = (auth, query = '') => get(`/api/provider/reviews${query}`, auth);
+
+  it('lists the signed-in provider\'s own reviews with the job context', async () => {
+    const result = await mine({ token: ctx.provider1.token });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.reviews.length, 2);
+    assert.ok(result.body.reviews.every((review) => review.providerId === ctx.provider1.user.id));
+
+    // Newest first; the first review ever left is last.
+    const first = result.body.reviews.at(-1);
+    assert.equal(first.bookingId, ctx.bookingA.id);
+    assert.equal(first.rating, 4);
+    assert.equal(first.comment, 'Quick and tidy.');
+    assert.equal(first.service.name, 'AC Repair');
+    assert.equal(first.issueKey, 'NOT_COOLING');
+    assert.equal(first.issueLabel, 'Not cooling');
+    assert.ok(first.completedAt);
+    assert.ok(first.createdAt);
+    assert.equal(first.customer.name, 'Asha Customer');
+
+    // Same aggregate as the public profile.
+    const profile = await get(`/api/providers/${ctx.provider1.user.id}`);
+    assert.equal(result.body.summary.reviewCount, profile.body.provider.reviewCount);
+    assert.equal(result.body.summary.rating, profile.body.provider.rating);
+  });
+
+  it('never includes customer phone numbers or request access tokens', async () => {
+    const result = await mine({ token: ctx.provider1.token });
+    const json = JSON.stringify(result.body);
+    assert.equal(json.includes('9876543210'), false, 'customer phone');
+    assert.equal(json.includes(ctx.requestA.token), false, 'access token');
+    assert.equal(json.includes(sha256(ctx.requestA.token)), false, 'access token hash');
+    for (const field of ['phone', 'accessToken', 'accessTokenHash', 'customerDetails', 'location', 'address']) {
+      assert.equal(json.includes(`"${field}"`), false, field);
+    }
+  });
+
+  it('a provider only ever sees their own reviews, whatever they put in the URL', async () => {
+    const empty = await mine({ token: ctx.provider2.token });
+    assert.equal(empty.status, 200);
+    assert.deepEqual(empty.body.reviews, []);
+    assert.deepEqual(empty.body.summary, { rating: null, reviewCount: 0 });
+
+    // Query parameters or path ids cannot point the listing at someone else.
+    const tampered = await mine({ token: ctx.provider2.token }, `?providerId=${ctx.provider1.user.id}`);
+    assert.deepEqual(tampered.body.reviews, []);
+    assert.equal(
+      (await get(`/api/provider/reviews/${ctx.provider1.user.id}`, { token: ctx.provider2.token })).status,
+      404,
+    );
+
+    // A review provider2 receives appears for provider2 only.
+    const flow = await runFullFlow({ provider: ctx.provider2 });
+    assert.equal(
+      (await post(`/api/bookings/${flow.bookingId}/review`, { requestToken: flow.token, body: { rating: 3, comment: 'Late but fine.' } })).status,
+      201,
+    );
+    const own = await mine({ token: ctx.provider2.token });
+    assert.deepEqual(own.body.reviews.map((review) => review.comment), ['Late but fine.']);
+    assert.deepEqual(own.body.summary, { rating: 3, reviewCount: 1 });
+    const other = await mine({ token: ctx.provider1.token });
+    assert.equal(other.body.reviews.some((review) => review.bookingId === flow.bookingId), false);
+  });
+
+  it('is for providers only: customers are refused and admin gets an empty list', async () => {
+    assert.equal((await mine({})).status, 401);
+    assert.equal((await mine({ requestToken: ctx.requestA.token })).status, 401);
+    const admin = await mine({ token: ctx.admin.token });
+    assert.equal(admin.status, 200);
+    assert.deepEqual(admin.body.reviews, []);
+  });
+
+  it('leaves review submission, the public listing and admin reviews unchanged', async () => {
+    const publicList = await get(`/api/providers/${ctx.provider1.user.id}/reviews`);
+    assert.equal(publicList.status, 200);
+    assert.equal(publicList.body.reviews.length, 2);
+    assert.equal('service' in publicList.body.reviews[0], false);
+
+    const adminList = await get(`/api/admin/reviews?provider=${ctx.provider1.user.id}`, { token: ctx.admin.token });
+    assert.equal(adminList.status, 200);
+    assert.equal(adminList.body.reviews.length, 2);
+  });
+});
+
 describe('external jobs', () => {
   const path = (suffix = '') => `/api/provider/external-jobs${suffix}`;
 
@@ -1375,6 +1641,21 @@ describe('external jobs', () => {
     assert.equal((await del(path(`/${id}`), { token: ctx.provider1.token })).status, 200);
     assert.equal((await get(path(`/${id}`), { token: ctx.provider1.token })).status, 404);
   });
+
+  it('keeps its own lifecycle: no Location Reached step, and it may still start directly', async () => {
+    const created = await post(path(), { token: ctx.provider1.token, body: payload() });
+    const id = created.body.job.id;
+
+    assert.equal((await post(path(`/${id}/location-reached`), { token: ctx.provider1.token })).status, 404);
+    // The 4Fix request endpoint does not accept an external job id either.
+    assert.equal((await post(`/api/requests/${id}/location-reached`, { token: ctx.provider1.token })).status, 404);
+
+    const started = await post(path(`/${id}/start`), { token: ctx.provider1.token });
+    assert.equal(started.status, 200);
+    assert.equal(started.body.job.status, 'IN_PROGRESS');
+    assert.equal((await post(path(`/${id}/complete`), { token: ctx.provider1.token })).body.job.status, 'COMPLETED');
+    assert.equal((await del(path(`/${id}`), { token: ctx.provider1.token })).status, 200);
+  });
 });
 
 describe('authorization', () => {
@@ -1385,7 +1666,9 @@ describe('authorization', () => {
       ['GET', '/api/provider/jobs'],
       ['GET', '/api/provider/external-jobs/64b000000000000000000000'],
       ['POST', `/api/requests/${ctx.requestA.id}/accept`],
+      ['POST', `/api/requests/${ctx.requestA.id}/location-reached`],
       ['POST', `/api/requests/${ctx.requestA.id}/start`],
+      ['GET', '/api/provider/reviews'],
       ['PATCH', '/api/users/me'],
       ['GET', '/api/auth/me'],
       ['GET', '/api/admin/dashboard'],
@@ -1410,6 +1693,10 @@ describe('authorization', () => {
     assert.equal((await get(`${path}/notes`, { token: ctx.bookingBOther.token })).status, 403);
     assert.equal((await get(`${path}/messages`, { token: ctx.bookingBOther.token })).status, 403);
     assert.equal(
+      (await post(`/api/requests/${ctx.requestB.id}/location-reached`, { token: ctx.bookingBOther.token })).status,
+      403,
+    );
+    assert.equal(
       (await post(`/api/requests/${ctx.requestB.id}/start`, { token: ctx.bookingBOther.token })).status,
       403,
     );
@@ -1424,9 +1711,11 @@ describe('authorization', () => {
       ['GET', `/api/requests/${id}`],
       ['POST', `/api/requests/${id}/cancel`],
       ['POST', `/api/requests/${id}/accept`],
+      ['POST', `/api/requests/${id}/location-reached`],
       ['POST', `/api/requests/${id}/start`],
       ['POST', `/api/requests/${id}/complete`],
       ['GET', '/api/provider/requests'],
+      ['GET', '/api/provider/reviews'],
       ['GET', `/api/provider/requests/${id}`],
       ['GET', '/api/provider/jobs'],
       ['GET', '/api/bookings'],
@@ -1852,6 +2141,7 @@ describe('admin area preview (Provider View)', () => {
 
     for (const [method, path] of [
       ['POST', `/api/requests/${flow.requestId}/accept`],
+      ['POST', `/api/requests/${flow.requestId}/location-reached`],
       ['POST', `/api/requests/${flow.requestId}/start`],
       ['POST', `/api/requests/${flow.requestId}/complete`],
       ['POST', `/api/requests/${flow.requestId}/cancel`],
@@ -2132,6 +2422,7 @@ describe('provider categories', () => {
       phoneNumber: '9876532001',
       password: 'Password123',
       confirmPassword: 'Password123',
+      shopName: SHOP_NAME,
       shopLocation: SHOP_LOCATION,
       categories,
     });
@@ -2218,6 +2509,7 @@ describe('provider categories', () => {
     // The assignee keeps their job even after dropping that category.
     await patch('/api/users/me', { token: plumbingOnly.token, body: { categories: [ctx.categories.ac.id] } });
     assert.equal((await get(`/api/provider/requests/${plumbingRequest.id}`, { token: plumbingOnly.token })).status, 200);
+    assert.equal((await post(`/api/requests/${plumbingRequest.id}/location-reached`, { token: plumbingOnly.token })).status, 200);
     assert.equal((await post(`/api/requests/${plumbingRequest.id}/start`, { token: plumbingOnly.token })).status, 200);
   });
 
@@ -2289,6 +2581,7 @@ describe('invoices', () => {
     assert.equal(notYet.status, 404);
     assert.equal(notYet.body.error.code, 'INVOICE_NOT_FOUND');
 
+    await post(`/api/requests/${accepted.requestId}/location-reached`, { token: ctx.invoiceProvider.token });
     await post(`/api/requests/${accepted.requestId}/start`, { token: ctx.invoiceProvider.token });
     assert.equal(
       (await get(`/api/bookings/${accepted.bookingId}/invoice`, { token: ctx.invoiceProvider.token })).status,

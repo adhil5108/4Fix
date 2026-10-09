@@ -10,8 +10,10 @@ export const USER_ROLES = {
 
 // A provider's registered shop/business location. It is a fixed profile field, never a
 // live position: 4Fix does not track providers.
-// Providers who register give their shop address only (coordinates null); coordinates
-// are added if they later set the location from their profile. Never geocoded.
+// Providers give their shop address only; coordinates are no longer collected (they stay
+// null, or keep whatever an older profile already stored). Never geocoded.
+// Before `shopName` existed, providers typed their shop name and address together into
+// `address`; that combined text is left as the address, never split or guessed.
 const shopLocationSchema = new mongoose.Schema(
   {
     latitude: {
@@ -100,6 +102,14 @@ const userSchema = new mongoose.Schema(
     isAvailable: {
       type: Boolean,
       default: true,
+    },
+    // Shop/business name, e.g. "Cool Air Services". Required at provider signup; null
+    // for providers registered before it existed until they add it from their profile.
+    shopName: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+      default: null,
     },
     // Required at provider signup; null for providers registered before V1 until they
     // set it from their profile.

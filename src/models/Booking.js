@@ -1,10 +1,13 @@
 import mongoose from 'mongoose';
 
-// V1 job lifecycle: the provider accepts (ASSIGNED), starts work (IN_PROGRESS) and
-// completes it. Pre-V1 statuses (CONFIRMED/ON_THE_WAY/ARRIVED/IN_SERVICE) are mapped
-// onto these by scripts/migrate-v1-accept-flow.js.
+// Job lifecycle: the provider accepts (ASSIGNED), reaches the customer's location
+// (LOCATION_REACHED), starts work (IN_PROGRESS) and completes it. Pre-V1 statuses
+// (CONFIRMED/ON_THE_WAY/ARRIVED/IN_SERVICE) are mapped onto these by
+// scripts/migrate-v1-accept-flow.js; LOCATION_REACHED is deliberately a different name
+// from the legacy ARRIVED so re-running that script never rewrites it.
 export const BOOKING_STATUSES = {
   ASSIGNED: 'ASSIGNED',
+  LOCATION_REACHED: 'LOCATION_REACHED',
   IN_PROGRESS: 'IN_PROGRESS',
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
@@ -44,6 +47,11 @@ const bookingSchema = new mongoose.Schema(
     confirmedAt: {
       type: Date,
       required: true,
+    },
+    // Null on jobs started before the Location Reached step existed.
+    locationReachedAt: {
+      type: Date,
+      default: null,
     },
     technicianStartedAt: {
       type: Date,

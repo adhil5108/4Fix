@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 export const REQUEST_STATUSES = {
   PENDING: 'PENDING',
   ACCEPTED: 'ACCEPTED',
+  // The assigned provider has reached the customer's location but not started work.
+  LOCATION_REACHED: 'LOCATION_REACHED',
   IN_PROGRESS: 'IN_PROGRESS',
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
@@ -215,6 +217,11 @@ const serviceRequestSchema = new mongoose.Schema(
       index: true,
     },
     acceptedAt: {
+      type: Date,
+      default: null,
+    },
+    // Null for requests that were started before the Location Reached step existed.
+    locationReachedAt: {
       type: Date,
       default: null,
     },

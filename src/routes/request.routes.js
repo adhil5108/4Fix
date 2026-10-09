@@ -5,6 +5,7 @@ import {
   completeRequest,
   createRequest,
   getRequest,
+  markLocationReached,
   startRequest,
 } from '../controllers/request.controller.js';
 import { authenticate, authenticateRequestOwner } from '../middleware/authenticate.js';
@@ -25,8 +26,9 @@ router.get('/:requestId', asyncHandler(authenticateRequestOwner), asyncHandler(g
 router.post('/:requestId/cancel', asyncHandler(authenticateRequestOwner), asyncHandler(cancelRequest));
 
 // Provider job actions. Accept claims an open request atomically so exactly one
-// provider wins; start/complete are the only other steps.
+// provider wins; then location reached → start → complete, strictly in that order.
 router.post('/:requestId/accept', ...provider, asyncHandler(acceptRequest));
+router.post('/:requestId/location-reached', ...provider, asyncHandler(markLocationReached));
 router.post('/:requestId/start', ...provider, asyncHandler(startRequest));
 router.post('/:requestId/complete', ...provider, asyncHandler(completeRequest));
 

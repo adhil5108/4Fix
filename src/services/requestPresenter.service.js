@@ -120,6 +120,7 @@ export function toCustomerRequest(request, { booking } = {}) {
     selectedProviderId: toIdString(request.selectedProviderId),
     provider: toAssignedProviderContact(request),
     acceptedAt: request.acceptedAt ?? null,
+    locationReachedAt: request.locationReachedAt ?? null,
     ...(booking === undefined ? {} : { booking: booking ? toBookingRef(booking) : null }),
   };
 }
@@ -139,6 +140,7 @@ export function toProviderRequest(request, { includeLocation = false, booking } 
     customer: includeLocation ? toCustomerContact(request) : null,
     selectedProviderId: toIdString(request.selectedProviderId),
     acceptedAt: request.acceptedAt ?? null,
+    locationReachedAt: request.locationReachedAt ?? null,
     bookingId: booking ? booking.id : null,
   };
 }
@@ -155,6 +157,7 @@ export function toProviderJob(request, booking) {
     timeline: booking
       ? {
           acceptedAt: booking.confirmedAt,
+          locationReachedAt: booking.locationReachedAt ?? null,
           startedAt: booking.technicianStartedAt ?? null,
           completedAt: booking.completedAt ?? null,
         }

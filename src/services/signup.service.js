@@ -1,7 +1,7 @@
 import User, { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
 import { normalizePhoneNumber } from '../utils/normalizePhone.js';
-import { validateSignupShopLocation } from '../utils/shopLocation.js';
+import { validateShopLocation, validateShopName } from '../utils/shopLocation.js';
 import { parseProviderCategoryIds } from './category.service.js';
 import { hashPassword } from './password.service.js';
 import { createAccessToken } from './token.service.js';
@@ -30,7 +30,8 @@ function validateSignupInput({ name, phoneNumber, password, confirmPassword } = 
 // Only providers have accounts in V1; customers use 4Fix anonymously.
 export async function signupProvider(input) {
   validateSignupInput(input);
-  const shopLocation = validateSignupShopLocation(input?.shopLocation);
+  const shopName = validateShopName(input?.shopName);
+  const shopLocation = validateShopLocation(input?.shopLocation);
   // "Which categories do you work in?" — at least one, so the request feed has content.
   const categories = await parseProviderCategoryIds(input?.categories ?? [], { required: true });
 
@@ -48,6 +49,7 @@ export async function signupProvider(input) {
     role: USER_ROLES.PROVIDER,
     phoneVerifiedAt: null,
     isActive: true,
+    shopName,
     shopLocation,
     categories,
   });

@@ -118,7 +118,9 @@ export function dateOnly(daysFromNow) {
   return date.toISOString().slice(0, 10);
 }
 
-// Provider signup is address-only: the typed shop address is the shop location.
+// Provider signup takes the shop name and the typed shop address separately; the address
+// is the shop location (no coordinates).
+export const SHOP_NAME = 'Cool Air Services';
 export const SHOP_LOCATION = { address: 'Koramangala 5th Block' };
 
 // Providers are the only accounts in V1. Unless `categories` (ids) is given, the
@@ -126,12 +128,12 @@ export const SHOP_LOCATION = { address: 'Koramangala 5th Block' };
 export async function signupProvider(
   name,
   phoneNumber,
-  { password = 'Password123', shopLocation = SHOP_LOCATION, categories } = {},
+  { password = 'Password123', shopName = SHOP_NAME, shopLocation = SHOP_LOCATION, categories } = {},
 ) {
   const categoryIds =
     categories ?? (await get('/api/categories')).body.categories.map((category) => category.id);
   const result = await post('/api/auth/provider/signup', {
-    body: { name, phoneNumber, password, confirmPassword: password, shopLocation, categories: categoryIds },
+    body: { name, phoneNumber, password, confirmPassword: password, shopName, shopLocation, categories: categoryIds },
   });
 
   if (result.status !== 201) {

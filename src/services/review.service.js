@@ -4,7 +4,7 @@ import { ApiError } from '../utils/ApiError.js';
 import { optionalText } from '../utils/text.js';
 import { findBookingForUser } from './booking.service.js';
 import { findPublicProviderOrFail, getProviderStats } from './provider.service.js';
-import { toReview } from './reviewPresenter.service.js';
+import { toProviderOwnReview, toReview } from './reviewPresenter.service.js';
 import { toUserSummary } from './userPresenter.service.js';
 
 const MAX_PROVIDER_REVIEWS = 100;
@@ -94,5 +94,32 @@ export async function listProviderReviews(providerId) {
       reviewCount: providerStats.reviewCount,
     },
     reviews: reviews.map((review) => toReview(review, { includeCustomer: true })),
+  };
+}
+
+// The signed-in provider's own reviews ("My Reviews"), with the job each was left on.
+// Scoped to the caller's id from the JWT — there is no provider id to pass, so nobody can
+// list another provider's reviews here. ADMIN (Provider View preview) gets an empty list,
+// as with /api/provider/jobs. The summary uses the same aggregate as the public profile.
+export async function listOwnReviews(provider) {
+  const [reviews, stats] = await Promise.all([
+    Review.find({ providerId: provider.id })
+      .sort({ createdAt: -1 })
+      .limit(MAX_PROVIDER_REVIEWS)
+      .populate([
+        { path: 'requestId', select: 'serviceId issueKey issueLabel customerDetails.name', populate: { path: 'serviceId' } },
+        { path: 'bookingId', select: 'completedAt' },
+        { path: 'customerId', select: 'name' },
+      ]),
+    getProviderStats([provider.id]),
+  ]);
+  const providerStats = stats.get(provider.id) || { rating: null, reviewCount: 0 };
+
+  return {
+    summary: {
+      rating: providerStats.rating,
+      reviewCount: providerStats.reviewCount,
+    },
+    reviews: reviews.map(toProviderOwnReview),
   };
 }

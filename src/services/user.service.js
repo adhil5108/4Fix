@@ -1,7 +1,7 @@
 import User, { USER_ROLES } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
 import { optionalText, requiredText } from '../utils/text.js';
-import { validateShopLocation } from '../utils/shopLocation.js';
+import { validateShopLocation, validateShopName } from '../utils/shopLocation.js';
 import { parseProviderCategoryIds } from './category.service.js';
 import { toSafeUser } from './userPresenter.service.js';
 
@@ -46,8 +46,14 @@ async function buildUpdate(user, input) {
       update.experienceYears = parseExperienceYears(input.experienceYears);
     }
 
+    // Optional while editing so providers registered before it existed can still save
+    // their address; null or blank clears it.
+    if (input?.shopName !== undefined) {
+      update.shopName = validateShopName(input.shopName, { required: false });
+    }
+
     if (input?.shopLocation !== undefined) {
-      update.shopLocation = validateShopLocation(input.shopLocation);
+      update.shopLocation = validateShopLocation(input.shopLocation, { existing: user.shopLocation });
     }
 
     if (input?.isAvailable !== undefined) {

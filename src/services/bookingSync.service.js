@@ -9,9 +9,25 @@ export async function syncBookingWithRequest(request) {
   const now = new Date();
 
   switch (request.status) {
-    case REQUEST_STATUSES.IN_PROGRESS:
+    case REQUEST_STATUSES.LOCATION_REACHED:
       await Booking.updateOne(
         { requestId: request.id, bookingStatus: BOOKING_STATUSES.ASSIGNED },
+        {
+          $set: {
+            bookingStatus: BOOKING_STATUSES.LOCATION_REACHED,
+            locationReachedAt: request.locationReachedAt ?? now,
+          },
+        },
+      );
+      return;
+
+    // ASSIGNED is still matched so a booking that missed the previous sync catches up.
+    case REQUEST_STATUSES.IN_PROGRESS:
+      await Booking.updateOne(
+        {
+          requestId: request.id,
+          bookingStatus: { $in: [BOOKING_STATUSES.ASSIGNED, BOOKING_STATUSES.LOCATION_REACHED] },
+        },
         { $set: { bookingStatus: BOOKING_STATUSES.IN_PROGRESS, technicianStartedAt: now } },
       );
       return;

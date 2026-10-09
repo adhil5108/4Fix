@@ -1,6 +1,7 @@
 import {
   createReview as createReviewService,
   getReview as getReviewService,
+  listOwnReviews as listOwnReviewsService,
   listProviderReviews as listProviderReviewsService,
 } from '../services/review.service.js';
 
@@ -18,6 +19,12 @@ export async function getReview(req, res) {
 
 export async function listProviderReviews(req, res) {
   const result = await listProviderReviewsService(req.params.providerId);
+
+  res.status(200).json(result);
+}
+
+export async function listOwnReviews(req, res) {
+  const result = await listOwnReviewsService(req.user);
 
   res.status(200).json(result);
 }

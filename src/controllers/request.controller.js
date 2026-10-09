@@ -4,6 +4,7 @@ import {
   completeRequest as completeRequestService,
   createRequest as createRequestService,
   getCustomerRequest,
+  markLocationReached as markLocationReachedService,
   startRequest as startRequestService,
 } from '../services/request.service.js';
 
@@ -27,6 +28,12 @@ export async function cancelRequest(req, res) {
 
 export async function acceptRequest(req, res) {
   const result = await acceptRequestService(req.user, req.params.requestId);
+
+  res.status(200).json(result);
+}
+
+export async function markLocationReached(req, res) {
+  const result = await markLocationReachedService(req.user, req.params.requestId);
 
   res.status(200).json(result);
 }
